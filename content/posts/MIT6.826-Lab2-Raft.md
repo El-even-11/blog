@@ -1,9 +1,9 @@
 ---
-title: "{{ replace .Name "-" " " | title }}"
-date: {{ .Date }}
+title: "MIT6.826 Lab2 Raft"
+date: 2022-06-25T00:10:08+08:00
 # weight: 1
 # aliases: ["/first"]
-tags: ["first"]
+tags: ["Distributed System", "Consensus Algorithm"]
 author: "Me"
 # author: ["Me", "You"] # multiple authors
 showToc: true
