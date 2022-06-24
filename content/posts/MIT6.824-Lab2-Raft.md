@@ -1,9 +1,9 @@
 ---
-title: "MIT6.826 Lab2 Raft"
+title: "MIT6.824 Lab2 Raft"
 date: 2022-06-25T00:10:08+08:00
 # weight: 1
 # aliases: ["/first"]
-tags: ["Distributed System", "Consensus Algorithm"]
+tags: ["Raft", "Distributed System", "Consensus Algorithm"]
 author: "Me"
 # author: ["Me", "You"] # multiple authors
 showToc: true
@@ -22,7 +22,7 @@ ShowReadingTime: true
 ShowBreadCrumbs: true
 ShowPostNavLinks: true
 ShowWordCount: true
-ShowRssButtonInSectionTermList: true
+ShowRssButtonInSectionTermList: false
 UseHugoToc: true
 cover:
     image: "<image path/url>" # image path/url
