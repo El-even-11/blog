@@ -3,7 +3,7 @@ title: "Hugo Test"
 date: 2022-05-20T13:42:01+08:00
 # weight: 1
 # aliases: ["/first"]
-tags: ["first"]
+tags: ["Hello world"]
 author: "Me"
 # author: ["Me", "You"] # multiple authors
 showToc: true
