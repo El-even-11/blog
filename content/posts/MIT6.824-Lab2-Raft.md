@@ -153,3 +153,328 @@ Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时�
 
 ### Implementation
 
+需要实现的结构体不再赘述，按照 Figure2 来就行。
+
+首先实现两个RPC:
+
+#### AppendEntries RPC
+
+```go
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+    
+	if args.Term < rf.currentTerm {
+        // Reply false if term < currentTerm
+		reply.Success = false
+		reply.Term = rf.currentTerm		
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+        // If RPC request contains term T > currentTerm: 
+        // set currentTerm = T, convert to follower
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = FOLLOWER
+	}
+
+    // received AppendEntries RPC from current leader, reset election timer
+	rf.electionTimer.Reset(randomElectionTimeout()) 
+
+	reply.Success = true
+	reply.Term = rf.currentTerm
+}
+```
+
+#### RequestVote RPC
+
+```go
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+    
+	if args.Term < rf.currentTerm {
+        // Reply false if term < currentTerm
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+        // If RPC request contains term T > currentTerm: 
+        // set currentTerm = T, convert to follower
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = FOLLOWER
+	}
+
+	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+        // If votedFor is null or candidateId, grant vote; otherwise reject
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	// grant vote to candidate, reset election timer
+    rf.electionTimer.Reset(randomElectionTimeout())
+    rf.votedFor = args.CandidateId
+    
+	reply.VoteGranted = true
+	reply.Term = rf.currentTerm
+}
+```
+
+
+
+可以看到两个 RPC 的实现与 Figure 2 中的规则完全一致。依次实现即可。需要注意的是，处理 RPC 的整个过程中都需要持有锁。另外，在更新节点任期时，一定要同步将`votedFor` 置为 null。
+
+实现完两个 RPC 后，再实现较为复杂的 election 和 heartbeat 过程。
+
+
+
+#### Election
+
+在节点的 election timer 过期后，开始选举。因此，节点需要有一个监控 electon timer 的 go routine，ticker。
+
+```go
+func (rf *Raft) ticker() {
+	for !rf.killed() {
+		select {
+		case <-rf.electionTimer.C:
+			rf.mu.Lock()
+			if rf.state == LEADER {
+				rf.mu.Unlock()
+				break
+			}
+			rf.state = CANDIDATE
+			rf.mu.Unlock()
+			go rf.startElection()
+		}
+	}
+}
+```
+
+选举过程的 go routine 为 startElection。为什么将选举过程也作为一个 go routine，而不是阻塞地调用函数？因为在规则中提到过，**如果 election timer 超时时，Candidate 还未当选 Leader，则放弃此轮选举，开启新一轮选举**。
+
+接下来看实际负责选举过程的 go routine， startElection。
+
+```go
+func (rf *Raft) startElection() {
+	rf.mu.Lock()
+	rf.currentTerm++ 								// Increment currentTerm
+	rf.votedFor = rf.me								// Vote for self
+	rf.electionTimer.Reset(randomElectionTimeout()) // Reset election timer
+	rf.mu.Unlock()
+    
+    args := RequestVoteArgs{CandidateId: rf.me}
+	rf.mu.RLock()
+	args.Term = rf.currentTerm
+	rf.mu.RUnlock()
+    
+    voteCh := make(chan bool, len(rf.peers)-1)
+	for i := range rf.peers {						// Send RequestVote RPCs to all other servers
+		if i == rf.me {								// in PARALLEL
+			continue
+		}
+		go func(i int) {
+			reply := RequestVoteReply{}
+			if ok := rf.sendRequestVote(i, &args, &reply); !ok {
+				voteCh <- false
+				return
+			}
+			rf.mu.Lock()
+			if reply.Term > rf.currentTerm {
+                // If RPC response contains term T > currentTerm:
+                // set currentTerm = T, convert to follower
+				rf.currentTerm = reply.Term
+				rf.votedFor = -1
+				rf.state = FOLLOWER
+				rf.mu.Unlock()
+				return
+			}
+			rf.mu.Unlock()
+			voteCh <- reply.VoteGranted
+		}(i)
+	}
+
+	voteCnt := 1
+	voteGrantedCnt := 1
+	for voteGranted := range voteCh {
+		rf.mu.RLock()
+		state := rf.state
+		rf.mu.RUnlock()
+		if state != CANDIDATE {
+			break
+		}
+		if voteGranted {
+			voteGrantedCnt++
+		}
+		if voteGrantedCnt > len(rf.peers)/2 {
+			// gain over a half votes, switch to leader
+			rf.mu.Lock()
+			rf.state = LEADER
+			rf.mu.Unlock()
+			go rf.heartbeat()
+			break
+		}
+
+		voteCnt++
+		if voteCnt == len(rf.peers) {
+			// election completed without getting enough votes, break
+			break
+		}
+	}
+}
+```
+
+使用 n-1 个协程向其他节点并行地发送 RequestVote 请求。协程获得 response 后，向 `voteCh` 发送结果，startElection 协程进行结果统计。统计过程中，若发现失去了 Candidate 身份，则停止统计。若获得票数过半，则成功当选 Leader，启动 heartbeat 协程。若所有成员已投票，且未当选 Leader，则退出统计。
+
+要注意的是，需要确保所有不再使用的 go routine 能够正常退出，避免占据资源。
+
+成功当选 Leader 后，开始发送心跳。
+
+
+
+#### Heartbeat
+
+```go
+func (rf *Raft) heartbeat() {
+	wakeChPool := make([]chan struct{}, len(rf.peers))
+	doneChPool := make([]chan struct{}, len(rf.peers))
+    // allocate each peer with a go routine to send AppendEntries RPCs
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		wakeChPool[i] = make(chan struct{})
+		doneChPool[i] = make(chan struct{})
+		go func(i int) {	// replicator go routine
+			for {
+				select {
+				case <-wakeChPool[i]:
+					args := AppendEntriesArgs{LeaderId: rf.me}
+					reply := AppendEntriesReply{}
+					rf.mu.RLock()
+					args.Term = rf.currentTerm
+					rf.mu.RUnlock()
+					
+					go func() {
+						if ok := rf.sendAppendEntries(i, &args, &reply); !ok {
+							return
+						}
+						rf.mu.Lock()
+						if reply.Term > rf.currentTerm {
+							rf.currentTerm = reply.Term
+							rf.votedFor = -1
+							rf.state = FOLLOWER
+							rf.mu.Unlock()
+							return
+						}
+						rf.mu.Unlock()
+					}()
+				case <-doneChPool[i]:
+					return
+				}
+			}
+		}(i)
+	}
+
+	broadcast := func() {
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+			go func(i int) {
+				wakeChPool[i] <- struct{}{}
+			}(i)
+		}
+	}
+	broadcast()
+
+	rf.heartbeatTimer = time.NewTimer(HEARTBEAT_INTERVAL)
+	for {
+		<-rf.heartbeatTimer.C
+		if rf.killed() || !rf.isLeader() {
+			break
+		}
+		rf.heartbeatTimer.Reset(HEARTBEAT_INTERVAL)
+		broadcast()
+	}
+
+	// killed or no longer the leader, release go routines
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(i int) {
+			doneChPool[i] <- struct{}{}
+		}(i)
+	}
+}
+```
+
+heartbeat 协程首先为每个节点分配一个 replicator 协程，每个 replicator 协程负责向一个特定的节点发送 AppendEntries RPC。
+
+这些协程由 `wakeChPool[i]` 唤醒。实际上也可以用 `sync.Cond` 条件变量实现，但我不太会用，所以简单地用一组 channel 模拟。
+
+初始化这些协程后，heartbeat 协程首先进行一个初始的 broadcast，对应 Leader 刚当选时发出的一轮心跳。broadcast 即通过 `wakeChPool` 唤醒所有 replicator 协程，向所有节点发出一次心跳。
+
+此后，heartbeat 协程初始化一个 heartbeatTimer，并且在每次 heartbeatTimer 到期时，进行一次 broadcast，通知所有 replicator 协程发送一次心跳。这里需要注意的是，如果节点已经被 kill 或者不再是 Leader，需要中断对 heartbeatTimer 的监听，并且释放所有 replicator 协程。
+
+至此，选主过程和心跳成功实现。
+
+
+
+### Devil in the details
+
+Lab2A 难度不算大，然而我还是被一个细节卡住了挺久。
+
+在 6.824 Raft 实验中，已经给我们提供了 RPC 调用的方法，即
+
+```go
+rf.peers[server].Call("Raft.RPCName", args, reply)
+```
+
+其注释提到，
+
+> Call() is guaranteed to return (perhaps after a delay) *except* if the handler function on the server side does not return.  Thus there is no need to implement your own timeouts around Call().
+
+Call() 是确保一定会返回的，除非在被调用的RPC中阻塞，否则即使模拟的网络中断，Call() 也会正常返回 false。因此不需要再为 Call() 设置一个 Timeout 限制。
+
+然而，经过测试，Call() 的确会确保返回，但返回的时间可能会非常长（3到4秒，具体数值要阅读 labrpc 源码，我还没有仔细阅读）。因此，在 replicator 协程中，每次发送心跳，我们还要再启动一个协程，将 sendAppendEntries 放在此协程中运行，避免哪怕只有几秒钟的阻塞。因为在这几秒中，Leader 可能又发送了新的 heartbeat，或者 Leader 不再是 Leader。
+
+```go
+go func(i int) {	// replicator go routine
+	for {
+		select {
+		case <-wakeChPool[i]:
+			...
+			go func() { 	// launch a new go routine to run sending RPC
+				if ok := rf.sendAppendEntries(i, &args, &reply); !ok {
+					return
+				}
+				...
+			}()
+		case <-doneChPool[i]:
+			return
+		}
+	}
+}(i)
+```
+
+
+
+### Summary
+
+个人感觉 Lab2A 难度最大的地方在于合理控制各个 go routine 的生命周期。锁倒是暂时没碰到什么问题，直接一股脑地把可能存在 data race 的地方全部锁上并及时释放就好。整个选主过程的 go routine 生命周期如下：
+
+![](../imgs/lab2A3.png)
+
+Lab2A Leader Election 完成。
+
+
+
+## Lab2B Raft Log
+
+TODO
