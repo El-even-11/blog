@@ -25,7 +25,7 @@ ShowWordCount: true
 ShowRssButtonInSectionTermList: true
 UseHugoToc: true
 cover:
-    image: "../imgs/lab2A3.png" # image path/url
+    image: "../../imgs/lab2A3.png" # image path/url
     alt: "" # alt text
     caption: "" # display caption under cover
     relative: false # when using page bundles set this to true
@@ -59,11 +59,11 @@ Lab2A 主要实现 Raft 的选主过程，包括选举出 Leader 和 Leader 通�
 
 首先是选主过程的状态机模型：
 
-![image-20220625172652039](../imgs/lab2A2.png)
+![image-20220625172652039](../../imgs/lab2A2.png)
 
 接下来是 Raft 论文中最为重要的 Figure 2:
 
-![](../imgs/lab2A1.png)
+![](../../imgs/lab2A1.png)
 
 Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时先不考虑（但当然还是推荐先整体熟悉 Raft 所有内容后再开始编码）。关于选举部分的内容已经全部在图中标出。一个一个看：
 
@@ -469,7 +469,7 @@ go func(i int) {	// replicator go routine
 
 个人感觉 Lab2A 难度最大的地方在于合理控制各个 go routine 的生命周期。锁倒是暂时没碰到什么问题，直接一股脑地把可能存在 data race 的地方全部锁上并及时释放就好。整个选主过程的 go routine 生命周期如下：
 
-![](../imgs/lab2A3.png)
+![](../../imgs/lab2A3.png)
 
 Lab2A Leader Election 完成。
 
