@@ -193,33 +193,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-    
+
 	if args.Term < rf.currentTerm {
-        // Reply false if term < currentTerm
+		// Reply false if term < currentTerm
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
 	}
 
 	if args.Term > rf.currentTerm {
-        // If RPC request contains term T > currentTerm: 
-        // set currentTerm = T, convert to follower
+		// If RPC request contains term T > currentTerm:
+		// set currentTerm = T, convert to follower
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.state = FOLLOWER
 	}
 
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-        // If votedFor is null or candidateId, grant vote; otherwise reject
+		// If votedFor is null or candidateId, grant vote; otherwise reject
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
 	}
 
 	// grant vote to candidate, reset election timer
-    rf.electionTimer.Reset(randomElectionTimeout())
-    rf.votedFor = args.CandidateId
-    
+	rf.electionTimer.Reset(randomElectionTimeout())
+	rf.votedFor = args.CandidateId
+
 	reply.VoteGranted = true
 	reply.Term = rf.currentTerm
 }
@@ -262,19 +262,19 @@ func (rf *Raft) ticker() {
 ```go
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
-	rf.currentTerm++ 								// Increment currentTerm
-	rf.votedFor = rf.me								// Vote for self
+	rf.currentTerm++                                // Increment currentTerm
+	rf.votedFor = rf.me                             // Vote for self
 	rf.electionTimer.Reset(randomElectionTimeout()) // Reset election timer
 	rf.mu.Unlock()
-    
-    args := RequestVoteArgs{CandidateId: rf.me}
+
+	args := RequestVoteArgs{CandidateId: rf.me}
 	rf.mu.RLock()
 	args.Term = rf.currentTerm
 	rf.mu.RUnlock()
-    
-    voteCh := make(chan bool, len(rf.peers)-1)
-	for i := range rf.peers {						// Send RequestVote RPCs to all other servers
-		if i == rf.me {								// in PARALLEL
+
+	voteCh := make(chan bool, len(rf.peers)-1)
+	for i := range rf.peers { // Send RequestVote RPCs to all other servers
+		if i == rf.me { // in PARALLEL
 			continue
 		}
 		go func(i int) {
@@ -285,8 +285,8 @@ func (rf *Raft) startElection() {
 			}
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
-                // If RPC response contains term T > currentTerm:
-                // set currentTerm = T, convert to follower
+				// If RPC response contains term T > currentTerm:
+				// set currentTerm = T, convert to follower
 				rf.currentTerm = reply.Term
 				rf.votedFor = -1
 				rf.state = FOLLOWER
@@ -342,14 +342,14 @@ func (rf *Raft) startElection() {
 func (rf *Raft) heartbeat() {
 	wakeChPool := make([]chan struct{}, len(rf.peers))
 	doneChPool := make([]chan struct{}, len(rf.peers))
-    // allocate each peer with a go routine to send AppendEntries RPCs
+	// allocate each peer with a go routine to send AppendEntries RPCs
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 		wakeChPool[i] = make(chan struct{})
 		doneChPool[i] = make(chan struct{})
-		go func(i int) {	// replicator go routine
+		go func(i int) { // replicator go routine
 			for {
 				select {
 				case <-wakeChPool[i]:
@@ -358,7 +358,7 @@ func (rf *Raft) heartbeat() {
 					rf.mu.RLock()
 					args.Term = rf.currentTerm
 					rf.mu.RUnlock()
-					
+
 					go func() {
 						if ok := rf.sendAppendEntries(i, &args, &reply); !ok {
 							return
@@ -445,20 +445,20 @@ Call() 是确保一定会返回的，除非在被调用的RPC中阻塞，否则�
 然而，经过测试，Call() 的确会确保返回，但返回的时间可能会非常长（3到4秒，具体数值要阅读 labrpc 源码，我还没有仔细阅读）。因此，在 replicator 协程中，每次发送心跳，我们还要再启动一个协程，将 sendAppendEntries 放在此协程中运行，避免哪怕只有几秒钟的阻塞。因为在这几秒中，Leader 可能又发送了新的 heartbeat，或者 Leader 不再是 Leader。
 
 ```go
-go func(i int) {	// replicator go routine
+go func(i int) { // replicator go routine
 	for {
 		select {
 		case <-wakeChPool[i]:
 			...
-			go func() { 	// launch a new go routine to run sending RPC
+			go func() { // launch a new go routine to run sending RPC
 				if ok := rf.sendAppendEntries(i, &args, &reply); !ok {
 					return
 				}
-				...
 			}()
 		case <-doneChPool[i]:
 			return
 		}
+		...
 	}
 }(i)
 ```
@@ -477,4 +477,4 @@ Lab2A Leader Election 完成。
 
 ## Lab2B Raft Log
 
-TODO
+Lab2B 开始于 6.28。
