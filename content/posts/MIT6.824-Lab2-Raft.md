@@ -38,7 +38,7 @@ editPost:
 
 趁着暑假有空，把鸽了很久的 MIT6.824 做一下。Lab1 是实现一个 Map-Reduce，因为和 Raft 主线关系不大（因为懒），就略过了。另外，这次尝试实现一个 part 就来记录相关的内容，以免在全部实现后忘记部分细节（以免之后太懒不想写）。因此难免对 Raft 的整体把握有所不足。
 
-### Resources
+# Resources
 
 - [Course's Page](https://pdos.csail.mit.edu/6.824/index.html) 课程主页
 - [Students' Guide to Raft](https://thesquareplanet.com/blog/students-guide-to-raft/) 一篇引导博客
@@ -48,14 +48,14 @@ editPost:
 
 
 
-## Lab2A Raft Leader Election
+# Lab2A Raft Leader Election
 Lab2A 实现时间为6.22~6.24。
 
 Lab2A 主要实现 Raft 的选主过程，包括选举出 Leader 和 Leader 通过心跳维持身份。
 
 
 
-### Design
+## Design
 
 首先是选主过程的状态机模型：
 
@@ -67,7 +67,7 @@ Lab2A 主要实现 Raft 的选主过程，包括选举出 Leader 和 Leader 通�
 
 Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时先不考虑（但当然还是推荐先整体熟悉 Raft 所有内容后再开始编码）。关于选举部分的内容已经全部在图中标出。一个一个看：
 
-#### State
+### State
 
 每个 Raft 节点需要维护的状态：
 
@@ -76,7 +76,7 @@ Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时�
 
 
 
-#### AppendEntries RPC
+### AppendEntries RPC
 
 在领导选举的过程中，`AppendEntries RPC` 用来实现 Leader 的心跳机制。节点的 `AppendEntries RPC` 会被 Leader 定期调用。
 
@@ -97,7 +97,7 @@ Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时�
 
 
 
-#### RequestVote RPC
+### RequestVote RPC
 
 `RequestVote RPC` 会被 Candidate 调用，以此获取选票。
 
@@ -118,7 +118,7 @@ Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时�
 
 
 
-#### Rules for Servers
+### Rules for Servers
 
 **All Servers**
 
@@ -151,13 +151,13 @@ Figure 2 有许多关于日志复制等其他部分的内容，在这里暂时�
 
 
 
-### Implementation
+## Implementation
 
 需要实现的结构体不再赘述，按照 Figure2 来就行。
 
 首先实现两个RPC:
 
-#### AppendEntries RPC
+### AppendEntries RPC
 
 ```go
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -187,7 +187,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 ```
 
-#### RequestVote RPC
+### RequestVote RPC
 
 ```go
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -233,7 +233,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 
 
-#### Election
+### Election
 
 在节点的 election timer 过期后，开始选举。因此，节点需要有一个监控 electon timer 的 go routine，ticker。
 
@@ -336,7 +336,7 @@ func (rf *Raft) startElection() {
 
 
 
-#### Heartbeat
+### Heartbeat
 
 ```go
 func (rf *Raft) heartbeat() {
@@ -426,7 +426,7 @@ heartbeat 协程首先为每个节点分配一个 replicator 协程，每个 rep
 
 
 
-### Devil in the details
+## Devil in the details
 
 Lab2A 难度不算大，然而我还是被一个细节卡住了挺久。
 
@@ -465,7 +465,7 @@ go func(i int) { // replicator go routine
 
 
 
-### Summary
+## Summary
 
 个人感觉 Lab2A 难度最大的地方在于合理控制各个 go routine 的生命周期。锁倒是暂时没碰到什么问题，直接一股脑地把可能存在 data race 的地方全部锁上并及时释放就好。整个选主过程的 go routine 生命周期如下：
 
@@ -475,6 +475,6 @@ Lab2A Leader Election 完成。
 
 
 
-## Lab2B Raft Log
+# Lab2B Raft Log
 
 Lab2B 开始于 6.28。
