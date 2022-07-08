@@ -498,8 +498,23 @@ Lab2B 中需要完成 Figure 2 中余下的所有内容。顺带一提的是，F
 - `commitIndex` 已知的最高的**已提交**的 Entry 的 index。**被提交**的定义为，当 Leader 成功在大部分 server 上复制了一条 Entry，那么这条 Entry 就是一条**已提交**的 Entry。
 - `lastApplied` 最高的**已应用**的 Entry 的 index。已提交和已应用是不同的概念，已应用指这条 Entry 已经被运用到状态机上。已提交先于已应用。同时需要注意的是，Raft 保证了已提交的 Entry 一定会被应用（通过对选举过程增加一些限制，下面会提到）。
 
+commitIndex 和 lastApplied 分别维护 log 已提交和已应用的状态，当节点发现 commitIndex > lastApplied 时，代表着 commitIndex 和 lastApplied 间的 entries 处于已提交，未应用的状态。因此应将其间的 entries **按序**应用至状态机。
+
 #### AppendEntries RPC
 
 **Args**
 
-- `prevLogIndex` 
+- `prevLogIndex`  添加 Entries 的前一条 Entry 的 index。
+- `prevLogTerm` prevLogIndex 对应 entry 的 term。
+- `entries[]` 需要同步的 entries。若为空，则代表是一次 heartbeat。需要注意的是，不需要特别判断是否为 heartbeat，即使是 heartbeat，也需要进行一系列的检查。
+- `leaderCommit` Leader 的 commitIndex，帮助 Follower 更新自身的 commitIndex。
+
+**Receiver Implementation**
+
+1. 若 Follower 在 prevLogIndex 位置的 entry 的 term 与 prevLogTerm 不同（或者 prevLogIndex 的位置没有 entry），返回 false。
+2. 如果 Follower 的某一个 entry 与需要同步的 entries 中的一个 entry 冲突，则需要删除冲突 entry 及其之后的所有 entry。需要特别注意的是，**假如没有冲突，不能删除任何 entry**。
+3. 添加 Log 中不存在的新 entry。
+4. 如果 leaderCommit > commitIndex，令 commitIndex = min(leaderCommit, index of last new entry)。
+
+![](../../imgs/lab2B3.png)
+
