@@ -1,4 +1,5 @@
 ---
+
 title: "MIT6.824 Lab2 Raft"
 date: 2022-06-25T00:10:08+08:00
 # weight: 1
@@ -481,7 +482,7 @@ Lab2B 开始于 6.28。结束于7.7。
 
 完成第一版可以单次 pass 的代码大概用了5个小时左右，接下来信心满满地进行千次测试。然而随后的大部分时间，我基本都在试图从各种诡异的 log 找出出现概率极低的难以复现的 Bug。
 
-<img src="../../imgs/Lab2B1.png" style="zoom: 80%;" />
+![](../../imgs/lab2B1.png)
 
 
 
@@ -577,7 +578,7 @@ nextIndex 是最乐观的估计，被初始化为最大可能值；matchIndex �
 
   > To eliminate problems like the one in Figure 8, **Raft never commits log entries from previous terms by counting replicas**. Only log entries from the leader’s current term are committed by counting replicas; once an entry from the current term has been committed in this way, then all prior entries are committed indirectly because of the Log Matching Property. There are some situations where a leader could safely conclude that an older log entry is committed (for example, if that entry is stored on every server), but Raft takes a more conservative approach for simplicity.
 
-  <img src="../../imgs/lab2B4.png" style="zoom: 67%;" />
+  ![](../../imgs/lab2B4.png)
   
   这样简化了 Leader 当选的初始化工作，也成功避免了简单地通过 counting replicas 提交时，可能出现的已提交 entry 被覆盖的问题。
 
