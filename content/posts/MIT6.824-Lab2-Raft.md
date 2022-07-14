@@ -45,6 +45,7 @@ editPost:
 - [Debugging by Pretty Printing](https://blog.josejg.com/debugging-pretty/) debug 技巧，**强烈推荐阅读和运用**
 - [Raft Q&A](https://thesquareplanet.com/blog/raft-qa/) 关于 Raft 的一些 Q&A
 - [Raft Visualization](https://raft.github.io/) Raft 动画演示
+- [In Search of an Understandable Consensus Algorithm](https://el-even-11.github.io/Blog/raft-extended.pdf) Raft 论文
 
 ## Lab2A Raft Leader Election
 
@@ -500,21 +501,85 @@ Lab2B 中需要完成 Figure 2 中余下的所有内容。顺带一提的是，F
 
 commitIndex 和 lastApplied 分别维护 log 已提交和已应用的状态，当节点发现 commitIndex > lastApplied 时，代表着 commitIndex 和 lastApplied 间的 entries 处于已提交，未应用的状态。因此应将其间的 entries **按序**应用至状态机。
 
+对于 Follower，commitIndex 通过 Leader AppendEntries RPC 的参数 leaderCommit 更新。对于 Leader，commitIndex 通过其维护的 matchIndex 数组更新。
+
+- `nextIndex[]`  由 Leader 维护，`nextIndex[i]` 代表需要同步给 `peer[i]` 的下一个 entry 的 index。在 Leader 当选后，重新初始化为 Leader 的 last log index + 1。
+- `matchIndex[]` 由 Leader 维护，`matchIndex[i]` 代表 Leader 已知的已在 `peer[i]` 上成功复制的最高 entry index。在 Leader 当选后，重新初始化为 0。
+
+不能简单地认为 matchIndex = nextIndex - 1。
+
+nextIndex 是对追加位置的一种猜测，是乐观的估计。因此，当 Leader 上任时，会将 nextIndex 全部初始化为 last log index + 1，即乐观地估计所有 Follower 的 log 已经与自身相同。AppendEntries PRC 中，Leader 会根据 nextIndex 来决定向 Follower 发送哪些 entry。当返回失败时，则会将 nextIndex 减一，猜测仅有一条 entry 不一致，再次乐观地尝试。实际上，使用 nextIndex 是为了提升性能，仅向 Follower 发送不一致的 entry，减小 RPC 传输量。
+
+matchIndex 则是对同步情况的保守确认，为了保证安全性。matchIndex 及此前的 entry 一定都成功地同步。matchIndex 的作用是帮助 Leader 更新自身的 commitIndex。当 Leader 发现一个 N 值，N 大于过半数的 matchIndex，则可将其 commitIndex 更新为 N（需要注意任期号的问题，后文会提到）。matchIndex 在 Leader 上任时被初始化为 0。
+
+nextIndex 是最乐观的估计，被初始化为最大可能值；matchIndex 是最悲观的估计，被初始化为最小可能值。在一次次心跳中，nextIndex 不断减小，matchIndex 不断增大，直至 matchIndex = nextIndex - 1，则代表该 Follower 已经与 Leader 成功同步。
+
 #### AppendEntries RPC
 
 **Args**
 
 - `prevLogIndex`  添加 Entries 的前一条 Entry 的 index。
 - `prevLogTerm` prevLogIndex 对应 entry 的 term。
-- `entries[]` 需要同步的 entries。若为空，则代表是一次 heartbeat。需要注意的是，不需要特别判断是否为 heartbeat，即使是 heartbeat，也需要进行一系列的检查。
+- `entries[]` 需要同步的 entries。若为空，则代表是一次 heartbeat。需要注意的是，不需要特别判断是否为 heartbeat，即使是 heartbeat，也需要进行一系列的检查。因此本文也不再区分心跳和 AppendEntries RPC。
 - `leaderCommit` Leader 的 commitIndex，帮助 Follower 更新自身的 commitIndex。
 
 **Receiver Implementation**
 
 1. 若 Follower 在 prevLogIndex 位置的 entry 的 term 与 prevLogTerm 不同（或者 prevLogIndex 的位置没有 entry），返回 false。
-2. 如果 Follower 的某一个 entry 与需要同步的 entries 中的一个 entry 冲突，则需要删除冲突 entry 及其之后的所有 entry。需要特别注意的是，**假如没有冲突，不能删除任何 entry**。
+2. 如果 Follower 的某一个 entry 与需要同步的 entries 中的一个 entry 冲突，则需要删除冲突 entry 及其之后的所有 entry。需要特别注意的是，**假如没有冲突，不能删除任何 entry**。因为存在 Follower 的 log 更 up-to-date 的可能。
 3. 添加 Log 中不存在的新 entry。
-4. 如果 leaderCommit > commitIndex，令 commitIndex = min(leaderCommit, index of last new entry)。
+4. 如果 leaderCommit > commitIndex，令 commitIndex = min(leaderCommit, index of last new entry)。此即 Follower 更新 commitIndex 的方式。
 
 ![](../../imgs/lab2B3.png)
+
+#### RequestVote RPC
+
+**Args**
+
+- `lastLogIndex` Candidate 最后一个 entry 的 index，是投票的额外判据。
+- `lastLogTerm` 上述 entry 的 term。
+
+**Receiver Implementation**
+
+- 只有 Candidate 的 log 至少与 Receiver 的 log 一样**新（up-to-date）**时，才同意投票。Raft 通过两个日志的最后一个 entry 来判断哪个日志更 **up-to-date**。假如两个 entry 的 term 不同，term 更大的更新。term 相同时，index 更大的更新。
+
+  > Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs. If the logs have last entries with different terms, then the log with the later term is more up-to-date. If the logs end with the same term, then whichever log is longer is more up-to-date.
+
+这里投票的额外限制是为了保证已经被 commit 的 entry 一定不会被覆盖。仅有当 Candidate 的 log 包含所有已提交的 entry，才有可能当选为 Leader。
+
+#### Rules for Servers 
+
+**All Severs**
+
+- 如果 commitIndex > lastApplied，lastApplied++，将 log[lastApplied] 应用到状态机。即前文提到的 entry 从已提交状态到已应用状态的过程。
+
+**Leaders**
+
+- 如果收到了来自 client 的 command，将 command 以 entry 的形式添加到日志。在 lab2B 中，client 通过 Start() 函数传入 command。
+
+- 如果 last log index >= nextIndex[i]，向 peer[i] 发送 AppendEntries RPC，RPC 中包含从 nextIndex[i] 开始的日志。
+  - 如果返回值为 true，更新 nextIndex[i] 和 matchIndex[i]。
+  - 如果因为 entry 冲突，RPC 返回值为 false，则将 nextIndex[i] 减1并重试。这里的重试不一定代表需要立即重试，实际上可以仅将 nextIndex[i] 减1，下次心跳时则是以新值重试。
+
+- 如果存在 index 值 N 满足：
+
+  - N > commitIndex
+  - 过半数 matchIndex[i] >= N
+  - log[N].term == currentTerm
+
+  则令 commitIndex = N。
+
+  这里则是 Leader 更新 commitIndex 的方式。前两个要求都比较好理解，第三个要求是 Raft 的一个特性，即 Leader 仅会直接提交其任期内的 entry。存在这样一种情况，Leader 上任时，其最新的一些条目可能被认为处于未被提交的状态（但这些条目实际已经成功同步到了大部分节点上）。Leader 在上任时并不会检查这些 entry 是不是实际上已经可以被提交，而是通过提交此后的 entry 来间接地提交这些 entry。这种做法能够 work 的基础是 Log Matching Property：
+
+  > **Log Matching**: if two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index.
+
+  原文描述如下：
+
+  > To eliminate problems like the one in Figure 8, **Raft never commits log entries from previous terms by counting replicas**. Only log entries from the leader’s current term are committed by counting replicas; once an entry from the current term has been committed in this way, then all prior entries are committed indirectly because of the Log Matching Property. There are some situations where a leader could safely conclude that an older log entry is committed (for example, if that entry is stored on every server), but Raft takes a more conservative approach for simplicity.
+
+  <img src="../../imgs/lab2B4.png" style="zoom: 67%;" />
+  
+  这样简化了 Leader 当选的初始化工作，也成功避免了简单地通过 counting replicas 提交时，可能出现的已提交 entry 被覆盖的问题。
+
+到这里 Figure 2 基本介绍完毕。也大致解释了 Figure 2 中各种规则的缘由。Raft 论文中还有更多 Raft 的设计理念、Properties、安全性证明等内容，这里就不再赘述了。
 
