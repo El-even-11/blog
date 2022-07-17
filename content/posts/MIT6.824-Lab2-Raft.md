@@ -482,7 +482,7 @@ Lab2B 开始于 6.28。结束于7.7。
 
 完成第一版可以单次 pass 的代码大概用了5个小时左右，接下来信心满满地进行千次测试。然而随后的大部分时间，我基本都在试图从各种诡异的 log 找出出现概率极低的难以复现的 Bug。
 
-![](../../imgs/lab2B1.png)
+![](../../imgs/Lab2B1.png)
 
 
 
@@ -542,7 +542,7 @@ nextIndex 是最乐观的估计，被初始化为最大可能值；matchIndex �
 
 **Receiver Implementation**
 
-- 只有 Candidate 的 log 至少与 Receiver 的 log 一样**新（up-to-date）**时，才同意投票。Raft 通过两个日志的最后一个 entry 来判断哪个日志更 **up-to-date**。假如两个 entry 的 term 不同，term 更大的更新。term 相同时，index 更大的更新。
+- 只有 Candidate 的 log 至少与 Receiver 的 log 一样新（**up-to-date**）时，才同意投票。Raft 通过两个日志的最后一个 entry 来判断哪个日志更 **up-to-date**。假如两个 entry 的 term 不同，term 更大的更新。term 相同时，index 更大的更新。
 
   > Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs. If the logs have last entries with different terms, then the log with the later term is more up-to-date. If the logs end with the same term, then whichever log is longer is more up-to-date.
 
@@ -584,3 +584,540 @@ nextIndex 是最乐观的估计，被初始化为最大可能值；matchIndex �
 
 到这里 Figure 2 基本介绍完毕。也大致解释了 Figure 2 中各种规则的缘由。Raft 论文中还有更多 Raft 的设计理念、Properties、安全性证明等内容，这里就不再赘述了。
 
+
+
+### Implementation
+
+Lab2B 实现的难点应该在于众多的 corner case，以及理想情况与代码执行方式的差异，太多的线程和 RPC 让系统的复杂性骤升，未持有锁的时刻什么都有可能发生。另外还有一个令人纠结的地方，就是各种时机。例如，接收到了 client 的一个请求，什么时候将这条 entry 同步给 Follower？什么时候将已提交的 entry 应用至状态机？更新某一变量时，是起一线程轮询监听，还是用 channel 或者 sync.Cond 唤醒，还是采取 lazy 策略，问到我的时候再去计算？很多实现方式理论上都可以使用，或许也各有各的好处，限于时间，面对很多问题，我也只选择了一种我认为的比较容易实现的方式。
+
+这部分的代码相较于 Lab2A 有一些变动，除了 Lab2B 中新增的内容，主要是对投票过程进行了一些修改。
+
+先说 go routine 的使用。对于所有的初始节点（Follower 节点），包含如下后台 go routines：
+
+- `alerter`：1个。监听 electionTimer 的超时事件和重置事件。超时事件发生时，Follower 转变为 Candidate，发起一轮选举。重置事件发生时，将 electionTimer 重置。
+- `applier`：1个。监听 applierCh channel，当节点认为需要一次 apply 时，向 applierCh 发送一次信号，applier 接收信号后会将当前 lastApplied 和 commitIndex 间的所有 entry 提交。
+- `heartbeat`：1个。监听 heartbeatTimer 的超时事件，仅在节点为 Leader 时工作。heartbeatTimer 超时后，Leader 立即广播一次心跳命令。
+- `replicator`：n-1 个，每一个对于一个 peer。监听心跳广播命令，仅在节点为 Leader 时工作。接收到命令后，向对应的 peer 发送 AppendEntries RPC。
+
+所有节点仅拥有这 4 种长期执行的后台 go routines，以及若干短期执行任务的 go routines。接下来一个一个介绍。
+
+#### alerter
+
+alerter 代码如下：
+
+```go
+func (rf *Raft) alerter() {
+	doneCh := rf.register("alerter")
+	defer rf.deregister("alerter")
+	for {
+	FORLOOP:
+		select {
+		case <-rf.elecTimer.timer.C:
+			rf.lock("alerter")
+			if rf.state == LEADER {
+				rf.unlock("alerter")
+				break FORLOOP
+			}
+			select {
+			case <-rf.elecTimer.resetCh:
+				rf.elecTimer.reset()
+				rf.unlock("alerter")
+				break FORLOOP
+			default:
+			}
+			// start a new election
+			rf.state = CANDIDATE
+			rf.startElection()
+			rf.unlock("alerter")
+		case <-rf.elecTimer.resetCh:
+			if !rf.elecTimer.timer.Stop() {
+				select {
+				case <-rf.elecTimer.timer.C:
+				default:
+				}
+			}
+			rf.elecTimer.timer.Reset(randomElectionTimeout())
+		case <-doneCh:
+			return
+		}
+	}
+}
+```
+
+看上去还是有点复杂，下面慢慢来解释。
+
+首先是 `doneCh`。关于在节点被 kill 后，如何让各个后台协程优雅退出，有不少方法。原始代码框架中给出了 `killed()` 方法，希望我们在后台协程长期运行的 for 循环中检查节点是否被 kill。但是这种方法不太好用，原因是 for 循环中常常阻塞在接收 channel 信号的语句。此时虽然进入了 for 循环，但节点可能在阻塞时被 kill，协程无法得知。
+
+我希望能够有一种方式，在 `kill()` 方法被调用后，直接通知所有的后台 goroutines 让其停止运行。
+
+1. 最先想到的是 `context`。go 的 context 包可以用来处理类似的问题，如超时处理等等。基本思想是构建一颗 goroutine 树，父节点拥有关闭子节点的权力。但这里的场景稍微有点不同，不同的协程间不存在父子关系，只是 Raft 节点的不同后台协程。由 Raft 结构体管理，通过广播的方式通知所有协程较为合适。
+
+2. 提到广播机制，就想到了 `sync.Cond` ，条件变量。`sync.Cond` 的 `Broadcast()` 方法似乎与需求很契合，但 `sync.Cond` 的阻塞形式是 `cond.Wait()`，而不是由 channel 阻塞，不太方便配合 select 语句进行多路复用。
+
+3. 最后决定实现一个简单的 channel 广播方法。Raft 节点维护一个 `doneCh` map：
+
+   ```go
+   doneCh map[string]chan struct{}
+   ```
+   
+   key 是字符串，为协程的名称。value 是 channel。
+   
+   在后台协程初始化时，调用`rf.register()` 方法：
+   
+   ```go
+   func (rf *Raft) register(name string) <-chan struct{} {
+   	rf.lock()
+   	rf.doneCh[name] = make(chan struct{})
+   	doneCh := rf.doneCh[name]
+   	rf.unlock()
+   	return doneCh
+   }
+   ```
+   
+   在节点为协程注册一个 key-value，并返回注册生成的 channel，doneCh。
+   
+   此后，在 select 语句中监听 doneCh，收到信号后，立刻退出协程，并执行 `rf.deregister()`。
+   
+   ```go
+   func (rf *Raft) deregister(name string) {
+   	rf.lock()
+   	close(rf.doneCh[name])
+   	delete(rf.doneCh, name)
+   	rf.unlock()
+   }
+   ```
+   
+   关闭channel，并清除 map 中对应的 key-value。
+   
+   当上层调用 `Kill()` 方法时：
+   
+   ```
+   func (rf *Raft) Kill() {
+   	atomic.StoreInt32(&rf.dead, 1)
+   	rf.lock("Kill")
+   	defer rf.unlock("Kill")
+   	for _, ch := range rf.doneCh {
+   		go func(ch chan struct{}) { ch <- struct{}{} }(ch)
+   	}
+   }
+   ```
+   
+   遍历节点维护的 doneCh map，向所有 channel 发送信号，通知其对应的协程立即退出。
+
+这样就实现了在`Kill()`被调用时，第一时间主动通知所有后台协程退出，避免占用系统资源。
+
+接下来是 for 循环中的 select 语句。
+
+- `case <-doneCh:` 是刚才介绍的协程退出的通道。
+- `case <-rf.elecTimer.timer.C:` 是 electionTimer 超时事件发生的通道。
+- `case <-rf.elecTimer.resetCh:` 是 electionTimer 重置事件发生的通道。
+
+需要注意的是，我在这里对 electionTimer 做了一个简单的封装。其拥有一个 `reset()` 方法。
+
+```go
+type electionTimer struct {
+	timer   *time.Timer
+	resetCh chan struct{}
+}
+
+func (timer *electionTimer) reset() {
+	go func() { timer.resetCh <- struct{}{} }()
+}
+```
+
+为什么将 electionTimer 设定得这么复杂？按理来说，超时了就开始选举，需要重置的时候直接重置就好。我一开始也是这么想的，然而遇到了一个比较严重的问题。假如将超时事件按照如下处理：
+
+```go
+func alerter() {
+	for {
+		select {
+		case <-electionTimer.C:
+			rf.lock()
+			if rf.state == LEADER {
+				rf.unlock()
+				break
+			}
+			rf.state = CANDIDATE
+			rf.startElection()
+			rf.unlock()
+		}
+	}
+}
+```
+
+假设超时事件发生，程序执行至 rf.lock() ，而此时，节点正在处理 RequestVote RPC，因此 rf.lock() 被阻塞：
+
+```go
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.lock("RequestVote")
+	defer rf.unlock("RequestVote")
+	...
+	reply.VoteGranted = true
+	reply.Term = rf.currentTerm
+	rf.votedFor = args.CandidateId
+    rf.electionTimer.Reset(randomElectionTimeout())
+}
+```
+
+节点将选票投给了另一个 Candidate 节点，退出 RPC handler，然后 alerter 协程成功抢占到了锁——悲剧发生了。刚刚投出选票的节点，立马发起了新一轮的选举。
+
+这种情况会不会影响系统的 safety？说实话，我暂时还不太清楚。毕竟只是换一个 Leader 而已。但这种情况的确会造成一些测试的 fail，例如发生 split vote，即同时有多个节点 electionTimer 超时时，会使刚刚上任的 Leader 立马变成 Follower，影响了 liveness。而且很显然，这种情况并不是我们希望看到的，我们希望看到的是，要么 electionTimer 超时，发起一轮选举，要么 electionTimer 被重置，选举不会发生。因此我尝试加以解决。
+
+通过上述分析，可以发现问题的关键在于，超时事件和重置事件不能同时进行，必须互斥进行。因此就有了 alerter 的 select 框架：
+
+```go
+FORLOOP:
+select {
+case <-rf.elecTimer.timer.C:
+	rf.lock("alerter")
+	if rf.state == LEADER {
+		rf.unlock("alerter")
+		break FORLOOP
+	}
+	select {
+	case <-rf.elecTimer.resetCh:
+		rf.elecTimer.reset()
+		rf.unlock("alerter")
+		break FORLOOP
+	default:
+	}
+	// start a new election
+	rf.state = CANDIDATE
+	rf.startElection()
+	rf.unlock("alerter")
+case <-rf.elecTimer.resetCh:
+	if !rf.elecTimer.timer.Stop() {
+		select {
+		case <-rf.elecTimer.timer.C:
+		default:
+		}
+	}
+	rf.elecTimer.timer.Reset(randomElectionTimeout())
+case <-doneCh:
+	return
+}
+```
+
+先看重置事件。在封装好的 electionTimer 中，通过调用其 reset 方法将其重置。
+
+```go
+func (timer *electionTimer) reset() {
+	go func() { timer.resetCh <- struct{}{} }()
+}
+```
+
+由于需要重置 electionTimer 时，一般持有锁，而重置 electionTimer 也不需要保证同步，因此用 go func 异步执行发送信号的语句。避免循环等待产生死锁，或发送信号阻塞时间过长，影响系统可用性。
+
+alerter 监听重置事件。重置事件发生时，对 electionTimer 进行重置。接下来是很经典的 go 重置 timer 的流程：先将 timer stop，假如 stop 时 timer 已经超时，则尝试将 channel 中的信号取出（若信号还未取出的话）。最后再 reset。
+
+> For a Timer created with NewTimer, Reset should be invoked only on stopped or expired timers with drained channels.
+
+这样就消除了上述的情况，当 select 语句先进入重置处理，若同时 electionTimer 超时，则将其信号取出，阻止其随后再立刻发起一轮选举。
+
+再看超时事件。
+
+如果当前身份已经为 Leader，则忽略超时事件。注意 select 语句中使用 break 的坑。
+
+随后又有一个 select 语句。这一步的目的是，假如 electionTimer 先超时，进入超时处理，此时 reset 信号来了，则将 reset 信号继续传递，并立刻停止超时处理，再下一次循环中将 electionTimer 重置。若没有 reset 信号，则继续后面的步骤。这样做的原因是，重置步骤是异步进行的，且重置事件与超时事件几乎同时发生时，为了保持 Leader 的 liveness，我们更加偏好优先处理重置事件。毕竟重置的信号已经到了，说明自己已经给其他 Candidate 投了票，或者 Leader 的心跳已经到了，没有必须发起一轮新的选举。
+
+实际上，这么做也是我的无奈之举。在正常情况下，Leader 发送心跳不会和 Follower 超时同时发生，因为心跳间隔是小于随机超时时间的最小值的。但我的代码有一个诡异的 bug，在一些时候，整个系统（同一时间，所有节点，所以基本可以排除代码阻塞在某处，或者等待 RPC 的问题）可能会同时停顿一段时间（400ms左右），导致 Leader 权力丧失。后面还会尽量详细介绍这个 bug，我有点怀疑是 gc 导致的，不过也实在没有能力继续排查。因此，只能通过偏好重置来增强 Leader 的 liveness。但实际上和我前面介绍的一样，即使没有这个问题，偏好重置也是更合理的选择。
+
+后面则是发起一轮选举的过程。选举流程相较 Lab2A 有所修改，以下给出代码，就不再做更多的介绍了。
+
+```go
+func (rf *Raft) startElection() {
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.elecTimer.reset()
+
+	args := RequestVoteArgs{}
+	args.CandidateId = rf.me
+	args.Term = rf.currentTerm
+	args.LastLogIndex = rf.lastLogIndex()
+	args.LastLogTerm = rf.log[rf.lastLogIndex()].Term
+
+	voteGrantedCnt := 1
+	// send RequestVote RPCs to all other peers.
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(i int) {
+			reply := RequestVoteReply{}
+			if ok := rf.sendRequestVote(i, &args, &reply); !ok {
+				return
+			}
+			rf.lock("startElection")
+			defer rf.unlock("startElection")
+			if rf.currentTerm != args.Term || rf.state != CANDIDATE {
+				// outdated reply, or Candidate has been elected as LEADER
+				return
+			}
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.votedFor = -1
+				rf.state = FOLLOWER
+				rf.elecTimer.reset()
+				return
+			}
+			if !reply.VoteGranted {
+				return
+			}
+			voteGrantedCnt++
+			if voteGrantedCnt > len(rf.peers)/2 {
+				// gain over a half votes, convert to leader
+				rf.state = LEADER
+				for i := 0; i < len(rf.peers); i++ {
+					// reinitialize upon winning the election
+					rf.nextIndex[i] = rf.lastLogIndex() + 1
+					rf.matchIndex[i] = 0
+				}
+				rf.broadcast(true)
+			}
+		}(i)
+	}
+}
+```
+
+需要注意两点：
+
+1. 投票是并行异步，前面已经提到过了。需要额外注意的是，各个 voter routines 发送 RPC 使用的 args 要完全一样，在启动 voter routines 前准备好，不可以在 voter routine 内部各自重新加锁读取 args，否则可能会导致发送的 args 不同。**未持锁时，任何事情都可能发生**。
+
+2. 在接收到 reply 时，一定要判断一下这是不是过期或无效的 reply，比如当前的 term 已经大于 args 的 term，那么这就是一个过期的 reply。论文中介绍过，对于过期的 reply，直接抛弃即可。[Students' Guide to Raft](https://thesquareplanet.com/blog/students-guide-to-raft/) 中也提到了这个问题，引用其中的一段话：
+
+   > From experience, we have found that by far the simplest thing to do is to first record the term in the reply (it may be higher than your current term), and then to compare the current term with the term you sent in your original RPC. If the two are different, drop the reply and return. *Only* if the two terms are the same should you continue processing the reply. There may be further optimizations you can do here with some clever protocol reasoning, but this approach seems to work well. **And *not* doing it leads down a long, winding path of blood, sweat, tears and despair**.
+
+关于 electionTimer 就介绍到这里。实现最初版本的 electionTimer 逻辑并不困难，但要保证完全地 bug-free (我目前的代码也不能保证)，难度还是很大。其中关于重置和超时同时发生的处理方式，也困扰了我很长时间，最终才得出这个较为稳定的版本。
+
+#### applier
+
+applier 代码如下：
+
+```go
+func (rf *Raft) applier() {
+	doneCh := rf.register("applier")
+	defer rf.deregister("applier")
+	for {
+		select {
+		case <-rf.applierCh:
+			rf.lock("applier")
+			lastApplied := rf.lastApplied
+			rf.lastApplied = rf.commitIndex
+			entries := append([]LogEntry{}, rf.log[lastApplied+1:rf.commitIndex+1]...)
+			rf.unlock("applier")
+			for i, entry := range entries {
+				command := entry.Command
+				rf.applyCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      command,
+					CommandIndex: lastApplied + i + 1,
+				}
+			}
+		case <-doneCh:
+			return
+		}
+	}
+}
+```
+
+applier 监听 applierCh，当信号到来时，将 lastApplied 到 commitIndex 间的所有 entry 按序应用至状态机。对于 entry 的 apply，采用一种较懒的方式：在 commitIndex 更新时，向 applierCh 异步发送信号即可。
+
+```go
+go func() { rf.applierCh <- struct{}{} }()
+```
+
+#### heartbeat
+
+heartbeat的代码如下：
+
+```go
+func (rf *Raft) heartbeat() {
+	doneCh := rf.register("heartbeat")
+	defer rf.deregister("heartbeat")
+	for {
+		select {
+		case <-rf.heartbeatTimer.C:
+			rf.lock("heartbeat")
+			if rf.state != LEADER {
+				rf.unlock("heartbeat")
+				break
+			}
+			rf.broadcast(true)
+			rf.unlock("heartbeat")
+		case <-doneCh:
+			return
+		}
+	}
+}
+```
+
+heartbeat 的部分也比较简单。heartbeatTimer 超时后，则 broadcast 一轮心跳信息即可。为什么 heartbeatTimer 不用像 electionTimer 那样制定复杂的规则？本质上是因为 heartbeatTimer 超时和重置的时刻都是已知的，可控的，不像 electionTimer 会并行地随时发生。
+
+broadcast 代码如下：
+
+```go
+func (rf *Raft) broadcast(isHeartbeat bool) {
+	rf.heartbeatTimer.Stop()
+	rf.heartbeatTimer.Reset(HEARTBEAT_INTERVAL)
+	args := AppendEntriesArgs{}
+	args.LeaderCommit = rf.commitIndex
+	args.LeaderId = rf.me
+	args.Term = rf.currentTerm
+
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		if isHeartbeat || rf.nextIndex[i] <= rf.lastLogIndex() {
+			go func(i int) {
+				rf.apeChPool[i] <- args
+			}(i)
+		}
+	}
+}
+```
+
+同样，用于 RPC 的 args 要提前准备好，用 channel 传递给每一个 replicator。需要注意的是，有两种事件会调用 broadcast。
+
+一是 heartbeatTimer 超时时，此时 Leader 为了维持权力，必须立刻向所有 peer 发送一次 AppendEntries RPC，即使需要同步的 entry 为空（即论文中所说的 heartbeat）。
+
+二是在上层 client 调用 `Start()` 函数发送命令时：
+
+```go
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.lock("Start")
+	defer rf.unlock("Start")
+	if rf.state != LEADER {
+		return -1, -1, false
+	}
+	index := rf.logLen() + 1
+	term := rf.currentTerm
+	isLeader := true
+	rf.log = append(rf.log,
+		LogEntry{
+			Term:    term,
+			Command: command,
+		},
+	)
+	rf.broadcast(false)
+	return index, term, isLeader
+}
+```
+
+此时，假如没有需要新同步的 entry，则无需发送一轮空的 AppendEntries RPC。这里的处理参考了 [MIT6.824-2021 Lab2 : Raft](https://zhuanlan.zhihu.com/p/463144886) 的做法。但后来我用 go test cover 的工具简单测试了一下，似乎没有覆盖到无需立即 broadcast 的路径。可能这样的处理是与后续 lab 有关，或者是我的理解有误。
+
+#### replicator
+
+replicator 的代码如下：
+
+```go
+func (rf *Raft) replicator(peer int) {
+	doneCh := rf.register(fmt.Sprintf("replicator%d", peer))
+	defer rf.deregister(fmt.Sprintf("replicator%d", peer))
+	for {
+		select {
+		case args := <-rf.apeChPool[peer]:
+			reply := AppendEntriesReply{}
+			rf.rlock("replicator")
+			args.PrevLogIndex = rf.nextIndex[peer] - 1
+			args.PrevLogTerm = rf.log[rf.nextIndex[peer]-1].Term
+			if rf.nextIndex[peer] <= rf.lastLogIndex() {
+				args.Entries = rf.log[rf.nextIndex[peer]:]
+			}
+			rf.runlock("replicator")
+
+			go func() {
+				if ok := rf.sendAppendEntries(peer, &args, &reply); !ok {
+					return
+				}
+				rf.lock("replicator")
+				defer rf.unlock("replicator")
+				if rf.currentTerm != args.Term || rf.state != LEADER {
+					// outdated reply, or LEADER has no longer been the LEADER
+					return
+				}
+				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+					rf.votedFor = -1
+					rf.state = FOLLOWER
+					rf.elecTimer.reset()
+					return
+				}
+				if reply.Success {
+					if rf.nextIndex[peer]+len(args.Entries) > rf.lastLogIndex()+1 {
+						// repeated reply, ignore
+						return
+					}
+					rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+					rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+					N := rf.lastLogIndex()
+					for N > rf.commitIndex {
+						if rf.log[N].Term != rf.currentTerm {
+							N--
+							continue
+						}
+						cnt := 1
+						for _, matchidx := range rf.matchIndex {
+							if matchidx >= N {
+								cnt++
+							}
+						}
+						if cnt <= len(rf.peers)/2 {
+							N--
+							continue
+						}
+						rf.commitIndex = N
+						go func() { rf.applierCh <- struct{}{} }()
+						return
+					}
+				} else {
+					index := -1
+					found := false
+					for i, entry := range rf.log {
+						if entry.Term == reply.ConflictTerm {
+							index = i
+							found = true
+						} else if found {
+							break
+						}
+					}
+					if found {
+						rf.nextIndex[peer] = index + 1
+					} else {
+						rf.nextIndex[peer] = reply.ConflictIndex
+					}
+				}
+			}()
+		case <-doneCh:
+			return
+		}
+	}
+}
+```
+
+replicator 也比较复杂。
+
+由于有多个 replicator 需要注册，在注册是记得根据对应 peer 使用不同的注册名。
+
+replicator 监听 broadcast 发送的信号。接收到信号时，向对应 peer 发送 AppendEntries RPC。
+
+需要注意的是，在接收到 reply 时，如果 reply 已经过期，同样需要直接抛弃。另外，由于 RPC 返回所需的时长不固定，有可能第一个 RPC 还没有返回，第二次心跳已经开始，这时会发送两条相同的 RPC，且都会返回 success（假如 Follower 先处理了第一个 RPC 请求，在处理第二个请求时，log 已经包含了需要同步的 entry，但不会发生冲突）。因此，需要先判断一下 nextIndex 是不是已经被更新过了，假如已经被更新，即 `rf.nextIndex[peer]+len(args.Entries) > rf.lastLogIndex()+1`，就代表收到了重复的回复，直接抛弃即可。随后则是 Leader 更新其 commitIndex 的流程。
+
+另外，假如 reply 由于 log 冲突返回了 false，我采用了论文中提到的优化，即 Follower 通过 reply 直接告知 Leader 发生冲突的位置，Leader 不用每次将 nextIndex - 1多次重试。经过测试，这个优化还是挺有必要的，可以显著地缩短 Lab2B 中一项 test 的运行时间。具体方法见 [Students' Guide to Raft : An aside on optimizations](https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations)：
+
+> The Raft paper includes a couple of optional features of interest. In 6.824, we require the students to implement two of them: log compaction (section 7) and accelerated log backtracking (top left hand side of page 8). The former is necessary to avoid the log growing without bound, and the latter is useful for bringing stale followers up to date quickly.
+>
+> These features are not a part of “core Raft”, and so do not receive as much attention in the paper as the main consensus protocol. 
+>
+> The accelerated log backtracking optimization is very underspecified, probably because the authors do not see it as being necessary for most deployments. It is not clear from the text exactly how the conflicting index and term sent back from the client should be used by the leader to determine what `nextIndex` to use. We believe the protocol the authors *probably* want you to follow is:
+>
+> - If a follower does not have `prevLogIndex` in its log, it should return with `conflictIndex = len(log)` and `conflictTerm = None`.
+> - If a follower does have `prevLogIndex` in its log, but the term does not match, it should return `conflictTerm = log[prevLogIndex].Term`, and then search its log for the first index whose entry has term equal to `conflictTerm`.
+> - Upon receiving a conflict response, the leader should first search its log for `conflictTerm`. If it finds an entry in its log with that term, it should set `nextIndex` to be the one beyond the index of the *last* entry in that term in its log.
+> - If it does not find an entry with that term, it should set `nextIndex = conflictIndex`.
+>
+> A half-way solution is to just use `conflictIndex` (and ignore `conflictTerm`), which simplifies the implementation, but then the leader will sometimes end up sending more log entries to the follower than is strictly necessary to bring them up to date.
+
+
+
+Lab2B 的全部实现大致就是这样。回过头来看好像也不是特别复杂，但确实折磨了我很久，看了整整几天的 log。
