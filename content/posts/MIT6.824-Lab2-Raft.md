@@ -1245,6 +1245,22 @@ Lab2B 的全部实现大致就是这样。回过头来看好像也不是特别�
 
 这样各节点的状态清晰很多，方便 debug。
 
+同时，在 Lab2B 中，我也遭遇了 Lab2A 中没有碰到的死锁问题。为了追踪锁的使用情况，我对锁做了一点封装。
+
+```go
+func (rf *Raft) lock(where string) {
+	Debug(dLock, "S%d locked %s", rf.me, where)
+	rf.mu.Lock()
+}
+
+func (rf *Raft) unlock(where string) {
+	Debug(dLock, "S%d unlocked %s", rf.me, where)
+	rf.mu.Unlock()
+}
+```
+
+主要就是增加了一个 debug 语句，对锁的使用情况进行跟踪。有了锁的日志之后，解决死锁问题不算困难。一般都是在同一段代码中不小心锁了两次，或者在发送、接收阻塞 channel 时持有了锁。比较好排查。
+
 ### A Confusing Bug
 
 截至 7.19 日，我已经跑了上万次 Lab2B 的 test。其中仍会出现几次 fail。经过排查，全部都是同一种原因导致，即上文提到过的，整个系统偶尔会出现一次400ms左右的停顿，导致 Leader 失去权力，出现新的 Candidate 并竞选成为 Leader。其中一次日志如下：
