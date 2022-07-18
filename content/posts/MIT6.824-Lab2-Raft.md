@@ -691,7 +691,7 @@ func (rf *Raft) alerter() {
    
    当上层调用 `Kill()` 方法时：
    
-   ```
+   ```go
    func (rf *Raft) Kill() {
    	atomic.StoreInt32(&rf.dead, 1)
    	rf.lock("Kill")
@@ -802,11 +802,11 @@ case <-doneCh:
 
 ```go
 func (timer *electionTimer) reset() {
-	go func() { timer.resetCh <- struct{}{} }()
+	timer.resetCh <- struct{}{}
 }
 ```
 
-由于需要重置 electionTimer 时，一般持有锁，而重置 electionTimer 也不需要保证同步，因此用 go func 异步执行发送信号的语句。避免循环等待产生死锁，或发送信号阻塞时间过长，影响系统可用性。
+由于需要重置 electionTimer 时，一般持有锁，而重置 electionTimer 也不需要保证同步，因此这里的 resetCh 使用的是带缓存的 channel，不会阻塞。避免循环等待产生死锁，或发送信号阻塞时间过长，影响系统可用性。
 
 alerter 监听重置事件。重置事件发生时，对 electionTimer 进行重置。接下来是很经典的 go 重置 timer 的流程：先将 timer stop，假如 stop 时 timer 已经超时，则尝试将 channel 中的信号取出（若信号还未取出的话）。最后再 reset。
 
@@ -1118,6 +1118,157 @@ replicator 监听 broadcast 发送的信号。接收到信号时，向对应 pee
 >
 > A half-way solution is to just use `conflictIndex` (and ignore `conflictTerm`), which simplifies the implementation, but then the leader will sometimes end up sending more log entries to the follower than is strictly necessary to bring them up to date.
 
+#### RPCs
 
+AppendEntries RPC 代码如下：
+
+```go
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.lock("AppendEntries")
+	defer rf.unlock("AppendEntries")
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+	}
+	if rf.state != FOLLOWER {
+		rf.state = FOLLOWER
+	}
+	rf.elecTimer.reset()
+	if args.PrevLogIndex > rf.lastLogIndex() || args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		// Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+		reply.Success = false
+		reply.Term = rf.currentTerm
+         // accelerated log backtracking optimization
+		if args.PrevLogIndex > rf.lastLogIndex() {
+			reply.ConflictTerm = -1
+			reply.ConflictIndex = rf.lastLogIndex() + 1
+		} else {
+			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+			index := args.PrevLogIndex - 1
+			for index > 0 && rf.log[index].Term == reply.ConflictTerm {
+				index--
+			}
+			reply.ConflictIndex = index + 1
+		}
+		return
+	}
+
+	// If an existing entry conflicts with a new one (same index but different terms),
+	// delete the existing entry and all that follow it
+	for i, entry := range args.Entries {
+		index := args.PrevLogIndex + i + 1
+		if index > rf.lastLogIndex() || rf.log[index].Term != entry.Term {
+			rf.log = rf.log[:index]
+			rf.log = append(rf.log, append([]LogEntry{}, args.Entries[i:]...)...)
+			break
+		}
+	}
+
+	if args.LeaderCommit > rf.commitIndex {
+		// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+		rf.commitIndex = min(args.LeaderCommit, rf.logLen())
+		go func() { rf.applierCh <- struct{}{} }()
+	}
+
+	reply.Success = true
+	reply.Term = rf.currentTerm
+}
+```
+
+AppendEntries RPC 没有太多可说的，严格按照 Figure 2 来就好。另外注意这里也需要实现前面说的 accelerated log backtracking optimization。
+
+RequestVote RPC 代码如下：
+
+```go
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.lock("RequestVote")
+	defer rf.unlock("RequestVote")
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		if rf.state != FOLLOWER {
+			rf.state = FOLLOWER
+			rf.elecTimer.reset()
+		}
+	}
+
+	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if rf.logLen() > 0 {
+		rfLastLogTerm := rf.log[rf.lastLogIndex()].Term
+		rfLastLogIndex := rf.lastLogIndex()
+		if rfLastLogTerm > args.LastLogTerm || rfLastLogTerm == args.LastLogTerm && rfLastLogIndex > args.LastLogIndex {
+			// If candidate's log is at least as up-to-date as receiver's log, grant vote; otherwise reject
+			reply.VoteGranted = false
+			reply.Term = rf.currentTerm
+			return
+		}
+	}
+
+	reply.VoteGranted = true
+	reply.Term = rf.currentTerm
+	rf.votedFor = args.CandidateId
+	rf.elecTimer.reset()
+}
+```
+
+同样也没有说明可说的。按照 Figure 2 来。
 
 Lab2B 的全部实现大致就是这样。回过头来看好像也不是特别复杂，但确实折磨了我很久，看了整整几天的 log。
+
+### Happy Debugging
+
+前面也提到了，对于 Lab2B，实现一版能够通过一次 test，甚至能够通过90%百次 test 的代码并不是特别难，严格按照 Figure2 编写就好。然而，前面 90% 的任务需要 90% 的时间完成，后面 10% 的任务需要另一个 90% 的时间来完成（甚至更久）。
+
+关于 debug，由于 Raft 是个多线程的项目，也有 RPC，因此以往打断点，单步 debug 的方式肯定行不通。实际上，最原始的方法就是最有效的方法，print log。
+
+在编写代码前，强烈推荐阅读 [Debugging by Pretty Printing](https://blog.josejg.com/debugging-pretty/)。这篇博客详细教你如何打日志，并用 python 的 rich 库打印漂亮工整的命令行输出。在编写代码时，记得在关键处增加一些 Debug 语句，时刻掌握系统变化的情况。
+
+![](../../imgs/lab2B5.png)
+
+![](../../imgs/lab2B6.png)
+
+这样各节点的状态清晰很多，方便 debug。
+
+### A Confusing Bug
+
+截至 7.19 日，我已经跑了上万次 Lab2B 的 test。其中仍会出现几次 fail。经过排查，全部都是同一种原因导致，即上文提到过的，整个系统偶尔会出现一次400ms左右的停顿，导致 Leader 失去权力，出现新的 Candidate 并竞选成为 Leader。其中一次日志如下：
+
+![](../../imgs/lab2B7.png)
+
+这是 Lab2B test 中最简单的 BasicAgreeTest，内容是成功选出 Leader，然后同步3条 entry 即可。正常情况下不会出现 Leader 变动。
+
+日志中每条语句前的时间戳单位为 ms。此时 S2 为 Leader。
+
+可以看到，在 730 ms 时，S2进行了一次心跳，成功将 {1，300} （任期号为1，命令内容为300）同步给 S0 和 S1。我设置的心跳间隔为 150 ms。然而，在 150 ms 后，也就是 880 ms 时，系统没有任何动作。此时 S2 本应该发送一次心跳，告知 S0 和 S1 {1，300} 已提交，可以将其应用至状态机。
+
+在 731 ms 时，S0 的 electionTimer 被 reset 为 308 ms，S1 的 electionTimer 被 reset 为 331 ms。按理说，即使没有接收到 Leader 的心跳，S0 也会在 308 ms 后，也就是 1039 ms 时，S0 electionTimer 超时，发起一轮选举。然而此时系统仍然没有动作。
+
+在 1092 ms 时，所有节点似乎同时苏醒了，S0 和 S1 都发起了一轮选举，S2 也接收到了投票请求。于是 S1 成功当选 Leader。
+
+S1 在当选 Leader 时，所有节点的 log 都是一致的，为 {1，100} {1，200} {1，300}，其中第3条 entry 没有提交。而由于 Raft 的特性，Leader 不会提交不属于其当前任期的 entry，只会在成功同步并提交下一条到来的 entry 时，间接地将第3条 entry 提交。然而不幸的是，第3条 entry 已经是 BasicAgree 会发送的最后一条 entry。因此，在这次 test 中，这条 entry 无法被提交，也就导致了 test fail。
+
+系统出现诡异停顿的原因是什么？是 timer 的种种坑，还是 gc 的锅？原谅我实在没有能力排查，因为这种 bug 出现的概率极低（应该略高于导致 test fail 的频率，因为可能在出现这种 bug 时，test 仍可以通过，导致 bug 被吞掉），并且这种 bug 实际上可以看成是所有节点同时 down 掉几百毫秒，对于 Raft 系统来说应该是可以容忍的，可能只会造成一次 Leader 更替。导致 test fail 的直接原因是 Raft 不直接提交不属于当前任期 entry 的特性，和 test 刚好没有后续需要同步的 entry。
+
+这里就留下一个遗憾吧，希望我以后有能力排查，到底是哪里出了问题。
+
+### Summary
+
+做完 Lab2B 的感觉很爽，但过程也真的很痛苦。从自信地通过第一次 test，到好几个痛苦 debug 的深夜，再到最后的成功实现。有种便秘的酣畅淋漓的感觉（？）。Lab2A 和 Lab2B 是 Raft 算法的核心内容，能够成功撸下来还是有一点点小小的成就感的。
+
+另外想说的是。6.824 Guidance 中提到了，对于计时操作，不要使用 go timer 或者 ticker，而是应该使用 sleep，在醒来时检查各种变量来实现。然而我还是硬着头皮用了 timer，毕竟这样更加直观，或许也更优雅。然而我不知道这是不是一个正确的选择。因为 timer 的各种诡异现象 debug 到破防的时候，我也想过是不是该推倒重来，全部换成 sleep。最终翻了很多篇博客和资料，还是勉强做出了这个能用的版本。是不是真的用 sleep 更容易实现呢？我也不知道。也许选择比努力更重要，但还是要坚持自己的选择，继续努力吧。
