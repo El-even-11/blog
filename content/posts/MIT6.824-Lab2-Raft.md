@@ -1263,7 +1263,7 @@ func (rf *Raft) unlock(where string) {
 
 ### A Confusing Bug
 
-截至 7.19 日，我已经跑了上万次 Lab2B 的 test。其中仍会出现几次 fail。经过排查，全部都是同一种原因导致，即上文提到过的，整个系统偶尔会出现一次400ms左右的停顿，导致 Leader 失去权力，出现新的 Candidate 并竞选成为 Leader。其中一次日志如下：
+截至 7.19，我已经跑了上万次 Lab2B 的 test。其中仍会出现几次 fail。经过排查，全部都是同一种原因导致，即上文提到过的，整个系统偶尔会出现一次400ms左右的停顿，导致 Leader 失去权力，出现新的 Candidate 并竞选成为 Leader。其中一次日志如下：
 
 ![](../../imgs/lab2B7.png)
 
@@ -1288,3 +1288,59 @@ S1 在当选 Leader 时，所有节点的 log 都是一致的，为 {1，100} {1
 做完 Lab2B 的感觉很爽，但过程也真的很痛苦。从自信地通过第一次 test，到好几个痛苦 debug 的深夜，再到最后的成功实现。有种便秘的酣畅淋漓的感觉（？）。Lab2A 和 Lab2B 是 Raft 算法的核心内容，能够成功撸下来还是有一点点小小的成就感的。
 
 另外想说的是。6.824 Guidance 中提到了，对于计时操作，不要使用 go timer 或者 ticker，而是应该使用 sleep，在醒来时检查各种变量来实现。然而我还是硬着头皮用了 timer，毕竟这样更加直观，或许也更优雅。然而我不知道这是不是一个正确的选择。因为 timer 的各种诡异现象 debug 到破防的时候，我也想过是不是该推倒重来，全部换成 sleep。最终翻了很多篇博客和资料，还是勉强做出了这个能用的版本。是不是真的用 sleep 更容易实现呢？我也不知道。也许选择比努力更重要，但还是要坚持自己的选择，继续努力吧。
+
+
+
+## Lab2C  Raft Persistence
+
+对 lab2C，guidance 中给出了 hard 的难度，但实际上只要认真完成了 lab2B，lab2C 应该是 easy。
+
+Raft 节点挂掉后，在重新恢复时，会从 disk 中读取其此前的状态。Figure 2 中已经告诉我们哪些状态需要持久化：
+
+- currentTerm
+- votedFor
+- log
+
+因此，只要我们对这些变量进行了修改，就需要进行一次持久化，将这些变量记录在 disk 上。（实际上，这样可能对性能有所影响，因为写入 disk 的 IO 操作比较耗时，但对 6.824 来说这样的简单处理没有问题）
+
+在 lab2C 中，我们不需要真的将状态写入 disk，为了简化代码和方便测试，lab2C 提供了给我们一个 persister 类。在需要对状态进行持久化时，使用 Raft 初始化时传入的 persister 对象对其存储即可。读取状态时也从 persister 中读取。
+
+需要实现 `persist()` and `readPersist()` 两个函数：
+
+```go
+func (rf *Raft) persist() {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+}
+
+func (rf *Raft) readPersist(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
+		panic("readPersist decode fail")
+	}
+
+	rf.currentTerm = currentTerm
+	rf.votedFor = votedFor
+	rf.log = log
+}
+```
+
+之后在 Raft 改变 currentTerm、votedFor 或 log 时，及时调用 `rf.persist()` 即可。
+
+
+
+## Lab2D Raft Log Compaction
+
