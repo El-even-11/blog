@@ -1004,7 +1004,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 ```
 
-此时，假如没有需要新同步的 entry，则无需发送一轮空的 AppendEntries RPC。这里的处理参考了 [MIT6.824-2021 Lab2 : Raft](https://zhuanlan.zhihu.com/p/463144886) 的做法。但后来我用 go test cover 的工具简单测试了一下，似乎没有覆盖到无需立即 broadcast 的路径。可能这样的处理是与后续 lab 有关，或者是我的理解有误。（[已更新](#broadcast)，是我的实现有误）
+此时，假如没有需要新同步的 entry，则无需发送一轮空的 AppendEntries RPC。这里的处理参考了 [MIT6.824-2021 Lab2 : Raft](https://zhuanlan.zhihu.com/p/463144886) 的做法。但后来我用 go test cover 的工具简单测试了一下，似乎没有覆盖到无需立即 broadcast 的路径。可能这样的处理是与后续 lab 有关，或者是我的理解有误。（[已更新](#leader-broadcast)，是我的实现有误）
 
 #### replicator
 
@@ -1526,7 +1526,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 在最后，需要更新节点的 `lastApplied` 和 `commitIndex`。生成快照实际上是将 entry 应用至状态机。我在这里简单地将`lastApplied` 和 `commitIndex` 直接设置为 `lastIncludedIndex`。实际上对于 `commitIndex` 的更新应该存在更合理的方式。
 
-#### <span id="broadcast"> Leader Broadcast </span>
+#### Leader Broadcast
 
 引入日志压缩后，Broadcast 也需要做一些修改，部分情况需要调用 InstallSnapshot RPC 而不是 AppendEntries RPC。同时，我发现了之前 Broadcast 模型存在的问题，在这里一并说明。
 
