@@ -1004,7 +1004,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 ```
 
-此时，假如没有需要新同步的 entry，则无需发送一轮空的 AppendEntries RPC。这里的处理参考了 [MIT6.824-2021 Lab2 : Raft](https://zhuanlan.zhihu.com/p/463144886) 的做法。但后来我用 go test cover 的工具简单测试了一下，似乎没有覆盖到无需立即 broadcast 的路径。可能这样的处理是与后续 lab 有关，或者是我的理解有误。
+此时，假如没有需要新同步的 entry，则无需发送一轮空的 AppendEntries RPC。这里的处理参考了 [MIT6.824-2021 Lab2 : Raft](https://zhuanlan.zhihu.com/p/463144886) 的做法。但后来我用 go test cover 的工具简单测试了一下，似乎没有覆盖到无需立即 broadcast 的路径。可能这样的处理是与后续 lab 有关，或者是我的理解有误。（[已更新](#broadcast)，是我的实现有误）
 
 #### replicator
 
@@ -1344,3 +1344,296 @@ func (rf *Raft) readPersist(data []byte) {
 
 ## Lab2D Raft Log Compaction
 
+Lab2D 编写初版 pass 代码大概用了两小时，随后断断续续 debug 修改好几天。
+
+Lab2D 是实现日志压缩。这其实并不是 Raft 算法的核心部分，Raft 算法的强一致性等特性也不依赖于日志压缩。但由于内存容量的限制，日志压缩在 Raft 的工业实现上也很重要。此前我们将 log 全部存储在内存之中，但随着 log 的不断增长，内存总是会被消耗殆尽。因此及时地将过老的已提交的日志压缩成快照很有必要。
+
+### Design
+
+![](../../imgs/lab2D1.png)
+
+Raft 的 snapshot 包含三个字段：
+
+- **state machine state**: 即状态机的快照。假如节点崩溃，随后重放 log 恢复时，以快照为初始状态进行重放。
+
+- **last included index**: 快照包含的最后一个 entry 的 index。这个字段是 log index 和 real index 的偏移量。log index 指某个 entry 在当前内存中 log 的位置，real index 则是某个 entry 的全局 index。例如如下情况：
+
+  ![](../../imgs/lab2D2.png)
+  
+  real index = last included index + log index
+  
+- **last included term**: 即 last included index 对应 entry 的 term。用于 AppendEntries RPC 中对于 `prevLogIndex` 和 `prevLogTerm` 的检测。
+
+快照可以由上层应用触发。当上层应用认为可以将一些已提交的 entry 压缩成 snapshot 时，其会调用节点的 `Snapshot()`函数，将需要压缩的状态机的状态数据传递给节点，作为快照。
+
+在正常情况下，仅由上层应用命令节点进行快照即可。但如果节点出现落后或者崩溃，情况则变得更加复杂。考虑一个日志非常落后的节点 i，当 Leader 向其发送 AppendEntries RPC 时，`nextIndex[i]` 对应的 entry 已被丢弃，压缩在快照中。这种情况下， Leader 就无法对其进行 AppendEntries。取而代之的是，这里我们应该实现一个新的 RPC，将 Leader 当前的快照直接发送给非常落后的 Follower。
+
+![](../../imgs/lab2D3.png)
+
+在 Raft 论文中，InstallSnapshot RPC 将 snapshot 分块发送，但在 6.824 的实现中，我们直接将整个 snapshot 全部一次发送即可。需要实现的字段如下：
+
+**Args**
+
+- `term` Leader 的任期。同样，InstallSnapshot RPC 也要遵循 Figure 2 中的规则。如果节点发现自己的任期小于 Leader 的任期，就要及时更新。
+- `leaderId` 用于重定向 client 。
+- `lastIncludedindex` & `lastIncludedTerm` 快照中包含的最后一个 entry 的 index 和 term。
+- `data[]` 快照数据。
+
+**Reply**
+
+- `term` 节点的任期。Leader 发现高于自己任期的节点时，更新任期并转变为 Follower。
+
+**Receiver Implementation**
+
+1. 如果 term < currentTerm，直接返回。
+2. 保存 snapshot。
+3. 如果当前 log 中包含 index 和 term 与 last included entry 相同的 entry，则保留此 entry 后的 log，并返回。
+4. 丢弃所有 log。
+5. 使用 snapshot 重置状态机。
+
+整个日志压缩的设计就是这样，并不算复杂。但实现起来还是有点麻烦，有特别多的 corner case，且需要对之前的代码进行大量改动。
+
+### Implementation
+
+#### index mapping
+
+引入日志压缩后的一大改变是，访问 log 不像之前那么轻松了。
+
+Raft 论文中约定，log 的索引从 1 开始。在此前的实现中，使用数组保存 log，直接使用索引访问即可。但在引入日志压缩后，需要配合 `lastIncludedIndex` 进行换算。
+
+```go
+// get an entry with its real index
+func (rf *Raft) entry(index int) LogEntry {
+	return rf.log[index-rf.lastIncludedIndex]
+}
+
+// switch real index to log index
+func (rf *Raft) logIndex(realIndex int) int {
+	return realIndex - rf.lastIncludedIndex
+}
+
+// switch log index to real index
+func (rf *Raft) realIndex(logIndex int) int {
+	return logIndex + rf.lastIncludedIndex
+}
+
+// get the real index of the latest entry in log
+func (rf *Raft) lastLogIndex() int {
+	return len(rf.log) - 1 + rf.lastIncludedIndex
+}
+
+// get the term of the latest entry in log
+func (rf *Raft) lastLogTerm() int {
+    // log[0] : last included entry in snapshot
+	return rf.log[len(rf.log)-1].Term
+}
+```
+
+在这里我实现了一系列的函数，方便索引的换算。其中，real index 指 entry 本身的索引，也就是从 1 递增的索引。log index 指 entry 存放在内存 log 中的位置。
+
+另外，由于索引从 1 开始，log[0] 的位置始终空出。因此可以将 last included entry 存放在 log[0] 的位置，这样在检测前置 entry 等操作中，需要访问 last included entry 时无需做额外的判断，算是一个小 trick。
+
+此后，将之前所有访问 log 的操作全部用新接口替换。
+
+#### Snapshot()
+
+```go
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	rf.lock("Snapshot")
+	defer rf.unlock("Snapshot")
+	defer rf.persist()
+	if index <= rf.lastIncludedIndex {
+		// outdated request
+		return
+	}
+	rf.snapshot = snapshot
+	rf.lastIncludedTerm = rf.entry(index).Term
+	rf.lastIncludedIndex = index
+	rf.log = append([]LogEntry{{Term: rf.lastIncludedTerm}}, rf.log[rf.logIndex(index)+1:]...)
+}
+```
+
+`Snapshot()` 方法由上层调用，代表上层已经成功将给定 index 及其前的 entry 进行了压缩，压缩结果为 snapshot。因此，节点需要丢弃已被压缩的日志。
+
+需要注意的是，在抛弃日志时，不能简单地截取切片，例如
+
+```go
+log = log[index+1:]
+```
+
+这和 go slice 的底层实现有关。go slice 的底层是一个定长数组和一个给定的引用范围。在数组容量不足时，会自动扩容，此时是在不同的地址创建了一个新的数组。在截取 slice 时，实际上没有创建新的数组，只是改变了引用的范围。但比较坑的是，即使此后仅会使用某个范围内的元素，整个数组也不会被 gc 回收，而是一直保留，最后造成 oom。
+
+因此，在抛弃日志时，可以用 `append` 方法创建新数组，确保之前的底层数组会被 gc 回收。
+
+#### InstallSnapshot RPC
+
+```go
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.lock("InstallSnapshot")
+	defer rf.unlock("InstallSnapshot")
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+	defer rf.persist()
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+	}
+	if rf.state != FOLLOWER {
+		rf.state = FOLLOWER
+	}
+	rf.elecTimer.reset()
+	reply.Term = rf.currentTerm
+	rf.snapshot = args.Data
+	if args.LastIncludedIndex < rf.lastIncludedIndex {
+		return
+	}
+	if rf.lastIncludedIndex == args.LastIncludedIndex && rf.lastIncludedTerm == args.LastIncludedTerm {
+		return
+	}
+	defer func() {
+		msg := ApplyMsg{
+			CommandValid:  false,
+			SnapshotValid: true,
+			Snapshot:      args.Data,
+			SnapshotTerm:  args.LastIncludedTerm,
+			SnapshotIndex: args.LastIncludedIndex,
+		}
+		go func() {
+			rf.applyCh <- msg
+		}()
+	}()
+	for i := 1; i < len(rf.log); i++ {
+		if rf.realIndex(i) == args.LastIncludedIndex && rf.log[i].Term == args.LastIncludedTerm {
+			rf.lastIncludedTerm = args.LastIncludedTerm
+			rf.lastIncludedIndex = args.LastIncludedIndex
+			rf.log = append([]LogEntry{{Term: rf.lastIncludedTerm}}, rf.log[i+1:]...)
+			rf.lastApplied = rf.lastIncludedIndex
+			rf.commitIndex = rf.lastIncludedIndex
+			return
+		}
+	}
+	rf.lastIncludedIndex = args.LastIncludedIndex
+	rf.lastIncludedTerm = args.LastIncludedTerm
+	rf.log = []LogEntry{{Term: rf.lastIncludedTerm}}
+	rf.lastApplied = rf.lastIncludedIndex
+	rf.commitIndex = rf.lastIncludedIndex
+}
+```
+
+在实现 InstallSnapshot RPC 时，也要遵守之前 Figure 2 中的规则。另外，InstallRPC 也可以看成 Leader 的一次心跳，Follower 既然接收到了来自 Leader 的 RPC，就代表 Leader 还“活着”。
+
+在最后，需要更新节点的 `lastApplied` 和 `commitIndex`。生成快照实际上是将 entry 应用至状态机。我在这里简单地将`lastApplied` 和 `commitIndex` 直接设置为 `lastIncludedIndex`。实际上对于 `commitIndex` 的更新应该存在更合理的方式。
+
+#### <span id="broadcast"> Leader Broadcast </span>
+
+引入日志压缩后，Broadcast 也需要做一些修改，部分情况需要调用 InstallSnapshot RPC 而不是 AppendEntries RPC。同时，我发现了之前 Broadcast 模型存在的问题，在这里一并说明。
+
+```go
+func (rf *Raft) broadcast(isHeartbeat bool) {
+	if isHeartbeat {
+		rf.heartbeatTimer.Stop()
+		rf.heartbeatTimer.Reset(HEARTBEAT_INTERVAL)
+	}
+
+	info := replicateInfo{
+		term:         rf.currentTerm,
+		leaderCommit: rf.commitIndex,
+	}
+
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		if isHeartbeat {
+			go rf.replicate(i, info)
+			continue
+		}
+		if rf.nextIndex[i] <= rf.lastLogIndex() {
+			go func(peer int) { rf.replicateCh[peer] <- info }(i)
+		}
+	}
+}
+```
+
+Broadcast 存在两种行为，一种为需要立即发送 RPC 维持权力的心跳，另一种则是不那么紧急的 replicate 请求。heartbeatTimer 到期时，立即发送心跳；上层传入新 entry 时，则发送不紧急的 replicate 请求。
+
+需要立即发送心跳时，直接并行地调用 `replicate` 函数。
+
+```go
+func (rf *Raft) replicate(peer int, info replicateInfo) {
+	rf.rlock("replicate")
+	if rf.nextIndex[peer] > rf.lastIncludedIndex {
+		// nextIndex is located in log
+		args := AppendEntriesArgs{
+			Term:         info.term,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.nextIndex[peer] - 1,
+			PrevLogTerm:  rf.entry(rf.nextIndex[peer] - 1).Term,
+			LeaderCommit: info.leaderCommit,
+		}
+		reply := AppendEntriesReply{}
+		if rf.nextIndex[peer] <= rf.lastLogIndex() {
+			args.Entries = rf.log[rf.logIndex(rf.nextIndex[peer]):]
+		}
+		rf.runlock("replicate")
+		rf.doAppendEntries(peer, &args, &reply)
+	} else {
+		// nextIndex is located in snapshot
+		args := InstallSnapshotArgs{
+			Term:              info.term,
+			LeaderId:          rf.me,
+			LastIncludedIndex: rf.lastIncludedIndex,
+			LastIncludedTerm:  rf.lastIncludedTerm,
+			Data:              rf.snapshot,
+		}
+		reply := InstallSnapshotReply{}
+		rf.runlock("replicate")
+		rf.doInstallSnapshot(peer, &args, &reply)
+	}
+}
+```
+
+可以看到，`replicate` 也存在两种行为。当需要同步的 entry 位于 log 中时，发送 AppendEntries RPC 即可；当 Follower 过于落后，需要同步的 entry 位于 snapshot 中时，则发送 InstallSnapshot RPC。
+
+当上层调用 `Start()` 触发 Broadcast 时，则向 `rf.replicateCh[peer]` 发送信号，通过常驻在后台的 n-1 个 replicator 协程进行同步。
+
+```go
+func (rf *Raft) replicator(peer int) {
+	doneCh := rf.register(fmt.Sprintf("replicator%d", peer))
+	defer rf.deregister(fmt.Sprintf("replicator%d", peer))
+	for {
+		select {
+		case info := <-rf.replicateCh[peer]:
+			replicateDoneCh := make(chan struct{})
+			go func() {
+				// ignore redundant replicating request
+				for {
+					select {
+					case <-rf.replicateCh[peer]:
+					case <-replicateDoneCh:
+						return
+					}
+				}
+			}()
+			rf.replicate(peer, info) // blocked by RPC
+			replicateDoneCh <- struct{}{}
+		case <-doneCh:
+			return
+		}
+	}
+}
+```
+
+`replicator` 接收到来自 `rf.replicateCh[peer]` 的信号后，会调用 `replicate` 进行一次同步。`replicate` 方法是阻塞的，会等待 RPC 返回 reply 后才会返回。在调用 RPC 前，replicator 会起一监听 goroutine，监听并抛弃此后重复的 replicate 请求。并在 RPC 处理完成后关闭这个 goroutine。因此，在上层短期连续调用多次 `Start()` 方法并调用 `rf.broadcast(fasle)` 时，若此前的 RPC 还没有返回，则这次的 Broadcast 请求会被抛弃，不再发送 RPC。这样做避免了短期内发送大量包含重复 entry 的 RPC，节省了带宽。
+
+在此前的实现中，短期连续调用 `Start()` 时，仍会多次发送 RPC。这里进行了更正。
+
+
+
+# Summary
+
+到这里，6.824 Lab2 的所有部分全部实现。实现和 debug 时间加起来大概花了10天左右，其余的时间就在写写记录，摸摸鱼。整体做下来还是成就感满满的。体感上最大的困难在于日复一日地对着上万行的日志找出难以察觉的错误，以及努力复现那些概率极低的边界情况。debug 时间还是太长了，稍微有点消磨斗志，到最后也不知道什么时候是个头。我在千次测试全部 pass 之后就没有再进行更多的测试了，希望我写的这个简陋的 Raft 在后续 lab 中不会出什么岔子。
+
+继续前进吧。
