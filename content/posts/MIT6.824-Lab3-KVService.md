@@ -290,13 +290,13 @@ go func() {
 
 至于 Get 请求，多次重复并不会改变状态机的状态，因此无需进行去重处理。
 
-*说到 Get 请求，在这里小小地偏一下题：*
-
-*按我们目前的实现，Get/Put/Append 请求均需先推至 Raft 层达成共识，记录在 Raft 层的 Log 中。然而 Get 请求并不会改变系统的状态，记录在 Log 中，对崩溃后回放 Log 恢复数据也没有什么帮助。那么实际上是不是不需要将 Get 请求传入 Raft 层进行共识呢？是的。并且这样会使系统效率更高。那么为什么我们要将 Get 请求也传入 Raft 层呢？这么做实际上是为了简化 KV Service 的实现难度。KV Service 要求我们永远不在 minority 中读取数据，因为这样可能会破坏线性一致性。假如我们不将 Get 传入 Raft 层，直接读取 Leader Server 状态机中的数据，试想下面这种情况：一共有 5 台 Server。一开始，Server1 为 Leader，Client 发送了一些请求，Raft 成功共识。此后，Server1、Server2 与 Server3、Server4、Server5 由于网络问题被划分成两个部分。第一部分中，Server1 仍认为自己是 Leader。第二部分中，Server3 成功当选 Leader，又接收了一些来自 Client 的请求，且在 Server3、Server4、Server5 间达成了共识。这时有两个 Client 希望 Get 同一个 key。Client1 首先联系了 Server1，Server1 认为它自己是 Leader，便向 Client1 返回了 outdated value。Client2 首先联系 Server3，Server3 向其返回了 updated value。这两个 Get 操作间并没有写操作，却读到了不同的数据，违背了线性一致性。*
-
-*为什么将 Get 传入 Raft 进行共识就可以避免这种错误？依然考虑上述情况：Server1 在接收到 Client1 的 Get 请求后，将其传入 Raft 层试图达成共识。然而 Server1 只能获得 Server2 的响应，无法将 Get 请求同步到大多数节点上，所以迟迟无法达成共识，Server 层也会被长期阻塞。Client1 久久等不到答复，便会更换 Server 重新进行请求，此时就会找到新的 Leader Server3 并成功执行 Get 请求。因此我们可以看到，将 Get 请求一同传入 Raft 层是最简单地避免读取到 minority 数据的方法。*
-
-*Raft 论文在 session 8 中提到了 read-only operations 等优化，可以自行参考。*
+> 说到 Get 请求，在这里小小地偏一下题：
+>
+> 按我们目前的实现，Get/Put/Append 请求均需先推至 Raft 层达成共识，记录在 Raft 层的 Log 中。然而 Get 请求并不会改变系统的状态，记录在 Log 中，对崩溃后回放 Log 恢复数据也没有什么帮助。那么实际上是不是不需要将 Get 请求传入 Raft 层进行共识呢？是的。并且这样会使系统效率更高。那么为什么我们要将 Get 请求也传入 Raft 层呢？这么做实际上是为了简化 KV Service 的实现难度。KV Service 要求我们永远不在 minority 中读取数据，因为这样可能会破坏线性一致性。假如我们不将 Get 传入 Raft 层，直接读取 Leader Server 状态机中的数据，试想下面这种情况：一共有 5 台 Server。一开始，Server1 为 Leader，Client 发送了一些请求，Raft 成功共识。此后，Server1、Server2 与 Server3、Server4、Server5 由于网络问题被划分成两个部分。第一部分中，Server1 仍认为自己是 Leader。第二部分中，Server3 成功当选 Leader，又接收了一些来自 Client 的请求，且在 Server3、Server4、Server5 间达成了共识。这时有两个 Client 希望 Get 同一个 key。Client1 首先联系了 Server1，Server1 认为它自己是 Leader，便向 Client1 返回了 outdated value。Client2 首先联系 Server3，Server3 向其返回了 updated value。这两个 Get 操作间并没有写操作，却读到了不同的数据，违背了线性一致性。
+>
+> 为什么将 Get 传入 Raft 进行共识就可以避免这种错误？依然考虑上述情况：Server1 在接收到 Client1 的 Get 请求后，将其传入 Raft 层试图达成共识。然而 Server1 只能获得 Server2 的响应，无法将 Get 请求同步到大多数节点上，所以迟迟无法达成共识，Server 层也会被长期阻塞。Client1 久久等不到答复，便会更换 Server 重新进行请求，此时就会找到新的 Leader Server3 并成功执行 Get 请求。因此我们可以看到，将 Get 请求一同传入 Raft 层是最简单地避免读取到 minority 数据的方法。
+>
+> Raft 论文在 session 8 中提到了 read-only operations 等优化，可以自行参考。
 
 去重具体的执行方式，就和之前在 Client 中还没有讲到的 id、seq 等变量有关了。
 
