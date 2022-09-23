@@ -104,7 +104,7 @@ func (db *kvdb) get(key string) (string, Err) {
 }
 ```
 
-在这里，我没有在 KV db 中使用单独的小锁。因为实际上这些操作都在 KVServer 中的大锁中进行，无需额外加锁。
+在这里，我没有在 KV db 中使用单独的锁。因为这些操作在后续代码中都是互斥进行的，无需额外加锁。
 
 ### Client
 
@@ -288,15 +288,23 @@ go func() {
 
 上面只介绍了 Append 请求的情况，Put 请求也类似。虽然在只有一个 Client 时，Put 请求多次执行不会改变结果，但如果有多个 Client，重复的 Put 请求也可能造成互相覆盖的后果。因此也需要进行去重。
 
-至于 Get 请求，多次重复并不会改变状态机的状态，因此无需进行去重处理。
+至于 Get 请求，多次重复并不会改变状态机的状态，无需进行去重处理。
 
 > 说到 Get 请求，在这里小小地偏一下题：
 >
-> 按我们目前的实现，Get/Put/Append 请求均需先推至 Raft 层达成共识，记录在 Raft 层的 Log 中。然而 Get 请求并不会改变系统的状态，记录在 Log 中，对崩溃后回放 Log 恢复数据也没有什么帮助。那么实际上是不是不需要将 Get 请求传入 Raft 层进行共识呢？是的。并且这样会使系统效率更高。那么为什么我们要将 Get 请求也传入 Raft 层呢？这么做实际上是为了简化 KV Service 的实现难度。KV Service 要求我们永远不在 minority 中读取数据，因为这样可能会破坏线性一致性。假如我们不将 Get 传入 Raft 层，直接读取 Leader Server 状态机中的数据，试想下面这种情况：一共有 5 台 Server。一开始，Server1 为 Leader，Client 发送了一些请求，Raft 成功共识。此后，Server1、Server2 与 Server3、Server4、Server5 由于网络问题被划分成两个部分。第一部分中，Server1 仍认为自己是 Leader。第二部分中，Server3 成功当选 Leader，又接收了一些来自 Client 的请求，且在 Server3、Server4、Server5 间达成了共识。这时有两个 Client 希望 Get 同一个 key。Client1 首先联系了 Server1，Server1 认为它自己是 Leader，便向 Client1 返回了 outdated value。Client2 首先联系 Server3，Server3 向其返回了 updated value。这两个 Get 操作间并没有写操作，却读到了不同的数据，违背了线性一致性。
+> 按我们目前的实现，Get/Put/Append 请求均需先推至 Raft 层达成共识，记录在 Raft 层的 Log 中。然而 Get 请求并不会改变系统的状态，记录在 Log 中，对崩溃后回放 Log 恢复数据也没有什么帮助。那么实际上是不是不需要将 Get 请求传入 Raft 层进行共识呢？是的。并且这样会使系统效率更高。那么为什么我们要将 Get 请求也传入 Raft 层呢？这么做实际上是为了简化 KV Service 的实现难度。KV Service 要求我们永远不在 minority 中读取数据，因为这样可能会破坏线性一致性。假如我们不将 Get 传入 Raft 层，直接读取 Leader Server 状态机中的数据，试想下面这种情况：
 >
-> 为什么将 Get 传入 Raft 进行共识就可以避免这种错误？依然考虑上述情况：Server1 在接收到 Client1 的 Get 请求后，将其传入 Raft 层试图达成共识。然而 Server1 只能获得 Server2 的响应，无法将 Get 请求同步到大多数节点上，所以迟迟无法达成共识，Server 层也会被长期阻塞。Client1 久久等不到答复，便会更换 Server 重新进行请求，此时就会找到新的 Leader Server3 并成功执行 Get 请求。因此我们可以看到，将 Get 请求一同传入 Raft 层是最简单地避免读取到 minority 数据的方法。
+> - 一共有 5 台 Server。一开始，Server1 为 Leader，Client 发送了一些请求，Raft 成功共识。
+> - 此后，Server1、Server2 与 Server3、Server4、Server5 由于网络问题被划分成两个部分。第一部分中，Server1 仍认为自己是 Leader。第二部分中，Server3 成功当选 Leader。
+> - Server3 又接收了一些来自 Client 的请求，且在 Server3、Server4、Server5 间达成了共识。
+> - 有两个 Client 希望 Get 同一个 key：
+>   - Client1 首先联系了 Server1，Server1 认为它自己是 Leader (实际已经 outdated)，便向 Client1 返回了 outdated value。
+>   - Client2 首先联系 Server3，Server3 向其返回了 updated value。
+> - 这两个 Get 操作间并没有写操作，却读到了不同的数据，违背了线性一致性。
 >
-> Raft 论文在 session 8 中提到了 read-only operations 等优化，可以自行参考。
+> 为什么将 Get 传入 Raft 进行共识就可以避免这种错误？依然考虑上述情况：Server1 在接收到 Client1 的 Get 请求后，将其传入 Raft 层试图达成共识。然而 Server1 只能获得 Server2 的响应，无法将 Get 请求同步到大多数节点上，所以迟迟无法达成共识，Server 层也会被长期阻塞。Client1 久久等不到答复，便会更换 Server 重新进行请求，此时就会找到新的 Leader Server3 并成功执行 Get 请求。所以，将 Get 请求一同传入 Raft 层是最简单地避免读取到 minority 数据的方法。
+>
+> Raft 论文在 session 8 中提到了 read-only operations 等优化，避免将 Get 写入 Log，同时解决了可能获取 outdated 数据的问题。可以自行参考。
 
 去重具体的执行方式，就和之前在 Client 中还没有讲到的 id、seq 等变量有关了。
 
@@ -320,7 +328,10 @@ maxSeq[x] >= y
 
 我一开始的想法是，直接在 RPC handler 的最开始判断请求是否重复，若是重复请求则直接拦截并返回。并在 RPC handler 返回前更新 maxSeq。然而这种处理方法存在问题。试想如下情况：
 
-Client 首先向 Leader Server1 发起 Append 请求。Server1 成功完成共识并将请求应用至状态机，也更新了 maxSeq。但在返回时 RPC 结果丢失。此时，恰好 Server1 由于崩溃或网络隔离等原因，失去 Leader 身份，Server2 当选 Leader。由于 RPC 结果丢失，Client 长时间得不到响应，便尝试更换 Server 重新发起请求。于是 Client 向 Server2 再次发起了同样的 Append 请求。由于 Server2 的 maxSeq 中并没有此 Client 此 Seq 的信息 (上次仅是存储在了 Server1 的 maxSeq)。于是 Server2 再次执行了请求。这样，也导致了一次请求多次应用的后果。
+- Client 首先向 Leader Server1 发起 Append 请求。Server1 成功完成共识并将请求应用至状态机，也更新了 maxSeq。但在返回时 RPC 结果丢失。
+- 此时，恰好 Server1 由于崩溃或网络隔离等原因，失去 Leader 身份，Server2 当选 Leader。
+- 由于 RPC 结果丢失，Client 长时间得不到响应，便尝试更换 Server 重新发起请求。
+- Client 向 Server2 发起了同样的 Append 请求。由于 Server2 的 maxSeq 中并没有此 Client 此 Seq 的信息 (上次仅是存储在了 Server1 的 maxSeq)，于是 Server2 再次执行了请求。也导致了一次请求多次应用的后果。
 
 出现这种情况的根本原因是 Server 并不会直接联系，不同 Server 的 maxSeq 无法共享，因此在 Client 切换 Server 提交重复请求时，Server 无法察觉。
 
@@ -333,20 +344,16 @@ func (kv *KVServer) apply(op Op) Result {
 	if op.T == "Get" {
 		result.value, result.err = kv.db.get(op.Key)
 	} else if op.T == "Put" {
-		kv.mu.Lock()
 		if kv.maxSeq[op.ClientId] < op.Seq {
 			kv.db.put(op.Key, op.Value)
 			kv.maxSeq[op.ClientId] = op.Seq
 		}
-		kv.mu.Unlock()
 		result.err = OK
 	} else {
-		kv.mu.Lock()
 		if kv.maxSeq[op.ClientId] < op.Seq {
 			kv.db.append(op.Key, op.Value)
 			kv.maxSeq[op.ClientId] = op.Seq
 		}
-		kv.mu.Unlock()
 		result.err = OK
 	}
 
@@ -354,11 +361,101 @@ func (kv *KVServer) apply(op Op) Result {
 }
 ```
 
-到此为止，似乎我们的 KV Service 已经完美无缺了。然而它仍然存在问题 TAT
+到此为止，似乎我们的 KV Service 已经完美无缺了。当时我就是这么认为的，然而它还存在两个逻辑上的小问题 TAT
 
-考虑如下情况：
+我们用来转发 applyCh 信息的 notifier 协程是这样的：
+
+```go
+func (kv *KVServer) notifier() {
+	for !kv.killed() {
+		select {
+		case msg := <-kv.applyCh:
+			op := msg.Command.(Op)
+			result := kv.apply(op)	// apply to state machine
+            
+			index := msg.CommandIndex
+			ch := kv.getNotifyCh(index)	
+			ch <- result	// notify the blocked server 
+		}
+	}
+}
+```
+
+需要意识到的是，不是所有 Server 都是 Leader 节点，Follower 节点也会通过 applyCh 向 Server 层转递需要 apply 至状态机的数据。此时 Server 层并没有 RPC Handler 在等待 applyCh 的数据。如果我们仍尝试获取对应的 `notifyCh` 并转发数据，则会造成 notifier 的无限阻塞。改写如下：
+
+```go
+func (kv *KVServer) notifier() {
+	for !kv.killed() {
+		select {
+		case msg := <-kv.applyCh:
+			op := msg.Command.(Op)
+			result := kv.apply(op)	// apply to state machine
+            
+            if _, isLeader := kv.rf.GetState(); !isLeader {
+                continue
+            }
+			index := msg.CommandIndex
+			ch := kv.getNotifyCh(index)	
+			ch <- result	// notify the blocked server 
+		}
+	}
+}
+```
+
+Server 不为 Leader 的情况已经解决。假如 Server 当前是 Leader，有没有可能部分 applyCh 传来的数据也无需转发呢？也有可能，最简单的情况就是新当选的 Leader 的 Log 中还存在已提交未应用的 command。将这个 command 传入 Server 层后，按照上面的写法，也会尝试向并不存在的 RPC Handler 转发数据并造成阻塞。这种情况解决起来也比较简单，不属于当前 term 的 command 无需转发，直接给状态机应用就可以了。
+
+```go
+func (kv *KVServer) notifier() {
+	for !kv.killed() {
+		select {
+		case msg := <-kv.applyCh:
+			op := msg.Command.(Op)
+			if msg.CommandIndex <= kv.lastApplied {
+				continue
+			}
+			kv.lastApplied = msg.CommandIndex
+
+			result := kv.apply(op)
+
+			if term, isLeader := kv.rf.GetState(); !isLeader || term != msg.CommandTerm {
+				continue
+			}
+
+			index := msg.CommandIndex
+			ch := kv.getNotifyCh(index)
+			ch <- result
+		}
+	}
+}
+```
+
+到这里 Lab3A 的要求已经完成了。
 
 
 
+## Test & Debug
 
+上面不断改错的经历大致就是我在测试集中不断 fail 并修改的过程。Lab 给出的测试集还是比较详尽的，可以测出各方面的细节。其中有一个测试集比较奇怪：
+
+```
+Test: ops complete fast enough (3A)
+```
+
+这个测试是需要 command 达成共识并应用至状态机的速度足够快，每次心跳间隔 (100ms) 中至少需要完成 3 次共识。在 Lab2 中，我们已经在每次 `Start(command)` 时都提起一次复制请求，用不同的 replicator 向各个节点并行地不断尝试复制 Log，而不是完全靠心跳进行复制 (基本每次心跳间隔只能完成一次共识)。按理来说应该能够轻松通过，然而测试结果总是超时。
+
+我试了试不带 `-race` 标识的测试，结果很意外，仅仅 3s 左右就通过了测试，而带上 `-race` 标识足足需要 40s 左右。到这里其实已经基本可以猜到是什么问题了：锁的竞争过于激烈，`-race` 标识会进行 Data race 的检测， 严重地影响了系统的性能。
+
+我又在 test 中加入了对 goroutine 数量的监控，发现 goroutine 数量不断增长，高的时候可以达到 300+ goroutine。虽说 goroutine 号称是轻松开启上万个，但这么高的 goroutine 数量显然还是有点问题。
+
+之后经过排查，发现大量的 goroutine 卡在了 Lab2 Raft 层向 applier 发送 apply 请求的 goroutine 上：
+
+```go
+go func() { rf.applyCh <- msg }()
+```
+
+这样就比较好解释了，Client 短时间内发起了大量的请求，而 applier 只有一个，大量尝试传递给 applyCh 的 msg 阻塞，导致协程数过大。
+
+因此需要将 Lab2 中过多的重复 msg 拦截，做法和 replicator 中类似，或者改用 sync.Cond，用 Signal 不阻塞的性质来实现。
+
+Lab3A 部分到这里结束，接下来讲讲 Lab3B。
 
