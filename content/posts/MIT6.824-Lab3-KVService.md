@@ -410,11 +410,6 @@ func (kv *KVServer) notifier() {
 		select {
 		case msg := <-kv.applyCh:
 			op := msg.Command.(Op)
-			if msg.CommandIndex <= kv.lastApplied {
-				continue
-			}
-			kv.lastApplied = msg.CommandIndex
-
 			result := kv.apply(op)
 
 			if term, isLeader := kv.rf.GetState(); !isLeader || term != msg.CommandTerm {
@@ -459,3 +454,16 @@ go func() { rf.applyCh <- msg }()
 
 Lab3A 部分到这里结束，接下来讲讲 Lab3B。
 
+
+
+## Snapshot
+
+前面的工作做好后，加上一个 Snapshot 其实比较简单，在 notifier 中根据 `RaftStateSize()` 和 `MaxStateSize` 的大小关系判断一下是否需要进行一次 Snapshot，并且增加一个 `commandValid == false` 的分支将 Raft 层传递的 Snapshot 应用至状态机就可以了。
+
+需要注意的是，Snapshot 不仅需要保存 kv database 的信息，还需要保存 maxSeq。因为改变了状态机的状态，就需要状态机相关的 maxSeq 信息来拦截重复请求。在应用 Snapshot 时，状态机状态发生改变，所以也需要将 maxSeq 与 Leader 的 maxSeq 进行同步。
+
+
+
+## Summary
+
+Lab3 整体坐下来难度比 Lab2 小一些，debug 也很折磨人就是了。其间也遇到了不少概率极低但匪夷所思的小问题，或许 Raft 层还是不太对？不过也不想再去处理了，感觉分布式系统的 debug 更像是一种体力活。
