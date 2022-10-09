@@ -99,7 +99,7 @@ global depth 的初始值为 0，取 H(K) 的低 0 位为索引，永远为 0，
 
 再插入 2。index 仍然为 0。而此时 bucket 已满，无法继续插入 2，则需要进行之前提到的 split 操作。这时的 split 包含如下几个步骤：
 
-1. global depth ++
+1. global depth++
 2. directory 容量翻倍
 3. 创建一个新的 bucket
 4. 重新安排指针
@@ -109,7 +109,7 @@ global depth 的初始值为 0，取 H(K) 的低 0 位为索引，永远为 0，
 
 ![](../../imgs/15-445-1-4.png)
 
-到目前为止应该还是比较容易理解的。global depth ++ 后为 1，需要取 H(K) 的低 1 位作为 index，index 就有了 0 1 之分。因此 dir 拥有的指针数需要翻倍。仅仅是 index 数量翻倍还不够，此时 0 和 1 仍然指向同一个 bucket，仍然没有空间插入新值，因此还需要新创建一个 bucket。创建 bucket 后，自然需要将 dir 指针重新安排，0 指向 bucket 0，1 指向 bucket 1。
+到目前为止应该还是比较容易理解的。global depth++ 后为 1，需要取 H(K) 的低 1 位作为 index，index 就有了 0 1 之分。因此 dir 拥有的指针数需要翻倍。仅仅是 index 数量翻倍还不够，此时 0 和 1 仍然指向同一个 bucket，仍然没有空间插入新值，因此还需要新创建一个 bucket。创建 bucket 后，自然需要将 dir 指针重新安排，0 指向 bucket 0，1 指向 bucket 1。
 
 为什么 KV 对也需要重新分配？假设不重新分配 KV 对，现在有一个 find 请求，查找 K=1 对应的 V。H(K)=1，global depth=1，则 index=1。而此时 index=1 对应的 bucket 空空如也。
 
@@ -170,7 +170,7 @@ Extendible Hash Table 是要保证线程安全的。目前我的策略是一把�
 
 对于每个 bucket，在 Find 时上读锁，Insert 和 Remove 时上写锁。
 
-对于整张表，Find 和 Remove 时上读锁。因为 Find 和 Remove 实际上只会改变 bucket 的内部变量，其线程安全由 bucket 内部锁保证即可。Insert 在无需 split 时也可以仅上写锁，需要 split 时上读锁。
+对于整张表，Find 和 Remove 时上读锁。Find 上读锁好理解，而 Remove 实际上只会改变 bucket 的内部变量，其线程安全由 bucket 内部锁保证，因此也可以只上读锁。Insert 在无需 split 时也可以仅上读锁，需要 split 时上写锁。
 
 我按照这个思路尝试优化了一下，结果成功负优化。可能是哪里出了点问题，有空再回头看看。先一把大锁凑合用。
 
