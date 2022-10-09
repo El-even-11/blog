@@ -267,7 +267,7 @@ page 的 pin_count 加 1。
 
 接下来说说 pin 和 unpin。
 
-当上层调用者新建一个 page 或者 fecth 一个 page 时，Buffer Pool Manager 会自动 pin 一下这个 page。接下来上层调用者对这个 page 进行一系列读写操作，操作完之后调用 unpin，告诉 Buffer Pool Manager，这个 page 我用完了，你可以把它直接丢掉或者 flash 掉了（也不一定真的可以，可能与此同时有其他调用者也在使用这个 page，具体能不能 unpin 掉要 Buffer Pool Manager 在内部判断一下 page 的 pin_count 是否为 0）。调用 unpin 时，同时传入一个 `is_dirty` 参数，告诉 Buffer Pool Manager 我刚刚对这个 page 进行的是读操作还是写操作。需要注意的是，Buffer Pool Manager 不能够直接将 page 的 dirty flag 设为 is_dirty。假设原本 dirty flag 为 true，则不能改变，代表其他调用者进行过写操作。只有原本 dirty flag 为 false 是，才能将 dirty flag 直接设为 is_dirty。
+当上层调用者新建一个 page 或者 fecth 一个 page 时，Buffer Pool Manager 会自动 pin 一下这个 page。接下来上层调用者对这个 page 进行一系列读写操作，操作完之后调用 unpin，告诉 Buffer Pool Manager，这个 page 我用完了，你可以把它直接丢掉或者 flash 掉了（也不一定真的可以，可能与此同时有其他调用者也在使用这个 page，具体能不能 unpin 掉要 Buffer Pool Manager 在内部判断一下 page 的 pin_count 是否为 0）。调用 unpin 时，同时传入一个 `is_dirty` 参数，告诉 Buffer Pool Manager 我刚刚对这个 page 进行的是读操作还是写操作。需要注意的是，Buffer Pool Manager 不能够直接将 page 的 dirty flag 设为 is_dirty。假设原本 dirty flag 为 true，则不能改变，代表其他调用者进行过写操作。只有原本 dirty flag 为 false 时，才能将 dirty flag 直接设为 is_dirty。
 
 整个流程大概就是这样。把流程理清楚，注意一些变量的同步，还是比较简单的。
 
