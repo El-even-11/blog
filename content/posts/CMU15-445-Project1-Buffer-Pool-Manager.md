@@ -273,7 +273,7 @@ page 的 pin_count 加 1。
 
 ## Summary
 
-整个 project 1 难度不算大，coding + debugging 时间大概是 4 个小时左右。个人感觉难度最大的部分是 Extendible Hash Table，因为要进行一些比较 trick 的位运算操作，我是真的有点玩不转。Buffer Pool Manager 部分的流程比较复杂，细节比较多，但认真按注释编写应该不会有什么问题。
+整个 project 1 难度不算大，coding + debug 时间大概是 4 个小时左右。个人感觉难度最大的部分是 Extendible Hash Table，因为要进行一些比较 tricky 的位运算操作，我是真的有点玩不转。Buffer Pool Manager 部分的流程比较复杂，细节比较多，但认真按注释编写应该不会有什么问题。
 
 由于所有数据结构都是粗暴的一把大锁锁住，代码的性能不尽如人意，这里留个坑，之后有机会优化一下。
 
