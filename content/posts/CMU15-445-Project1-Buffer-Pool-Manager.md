@@ -39,6 +39,7 @@ editPost:
 暂时战略放弃了 6.824 的 Lab4，来做做 CMU 新鲜出炉的 [15-445 FALL 2022](https://15445.courses.cs.cmu.edu/fall2022)。
 
 ## Resources
+
 - [https://15445.courses.cs.cmu.edu/fall2022](https://15445.courses.cs.cmu.edu/fall2022) 课程官网
 - [https://github.com/cmu-db/bustub](https://github.com/cmu-db/bustub) Bustub Github Repo
 - [https://www.gradescope.com/](https://www.gradescope.com/) 自动测评网站 GradeScope，course entry code: PXWVR5
@@ -48,6 +49,7 @@ editPost:
 **请不要将实现代码公开，尊重 Andy 和 TAs 的劳动成果！**
 
 ## Set up Environment
+
 实验需要 Linux 环境。虽说 Docker 什么的似乎也可以，但 Linux 总是更令人安心。为了方便测试，我选择了云服务器。
 
 JetBrains 家推出了新的 SSH 远程开发功能。本来想试试，结果 CLion 在 server 上足足吃了两三个 G 的内存，我 2 核 4G 的服务器不堪重负，还是老老实实用 vscode remote。
@@ -55,6 +57,7 @@ JetBrains 家推出了新的 SSH 远程开发功能。本来想试试，结果 C
 Debug 推荐用 lldb，在 vscode 安装相关插件后体验很好。终于不用整天翻看 6.824 又臭又长的 log 了。
 
 ## Overview
+
 Project1 主要与 Bustub 的 storage manager 相关，分为三个部分：
 
 - Extendible Hash Table
@@ -74,6 +77,7 @@ Project1 主要与 Bustub 的 storage manager 相关，分为三个部分：
 这个部分要实现一个 extendible 哈希表，内部不可以用 built-in 的哈希表，比如 `unordered_map`。这个哈希表在 Buffer Pool Manager 中主要用来存储 buffer pool 中 page id 和 frame id 的映射关系。
 
 Extendible Hash Table 由一个 directory 和多个 bucket 组成。
+
 - **directory**: 存放指向 bucket 的指针，是一个数组。用于寻找 key 对应 value 所在的 bucket。
 - **bucket**: 存放 value，是一个链表。一个 bucket 可以至多存放指定数量的 value。
 
@@ -153,8 +157,8 @@ bucket 1 的 local depth 为 1，其中存放的值实际上只用到了 H(K) �
 
 - 如何重新安排指针？
   重新安排指针实际上是重新安排指向需要 split 的 bucket 的兄弟指针。需要注意的是，兄弟指针不一定只有两个，而可以有 2^n 次个。例如下面这种情况：
-    
-  ![](../../imgs/15-445-1-9.png)  
+
+  ![](../../imgs/15-445-1-9.png)
 
   当我们插入 0 1 3 5 9 时，就会出现这种情况，其中 bucket 0 共有 2^2 个兄弟指针。实际上，兄弟指针的个数为 2^(global depth - local depth)。那么得知一个 index 后，如何找到这个 index 所有兄弟指针？仍然以上面为例。插入 2，插入至 bucket 0，再插入 4，bucket 0 已满，进行一次 split。H(4) = 100b，对应 index 是 4。因此需要找到 index 4 的所有兄弟指针。bucket 0 的 local depth 为 1，即只用到了低 1 位。100b 的低 1 位为 0。那么其兄弟指针的低 1 位也应是 0，即 000b 010b 100b 110b，分别为 0 2 4 6。这样我们就找到了所有的兄弟指针。接下来将兄弟指针重新分配。local depth 变为 2，用到低 2 位，则兄弟指针可以分为两组，x00b 和 x10b，即 0 4 一组，2 6 一组。其中，一组指向原 bucket 0，另一组指向新 bucket 4。这样就完成了指针的重新分配。
   其他情况也是类似的，先通过低位相同的特征找到所有兄弟指针，再将兄弟指针按照新位是 0 还是 1 分为两组，分别指向原 bucket 和新 bucket。
@@ -175,7 +179,6 @@ Extendible Hash Table 是要保证线程安全的。目前我的策略是一把�
 我按照这个思路尝试优化了一下，结果成功负优化。可能是哪里出了点问题，有空再回头看看。先一把大锁凑合用。
 
 另一个小细节是，每次 Insert 前要判断一下是否需要 split。而 split 之后不一定代表可以直接 Insert，因为可能重新分配 KV 对时，所有的 KV 对又被塞到了同一个 bucket 里，而凑巧的是需要插入的 KV 对也被带到了这个 bucket。因此需要循环判断，可能需要多次 split 才能成功插入。
-
 
 ## LRU-K Replacer
 
@@ -211,7 +214,67 @@ FrameInfo 里用链表保存 page 最近 K 次被引用的时间戳。这里的�
 
 evictable 等变量的变化比较简单，按照文档来就可以，这里就不再多说了。
 
-
 ## Buffer Pool Manager Instance
 
-TODO
+### Buffer Pool Manager Design
+
+这个部分的代码不是很难，主要是需要理清各个函数的作用和关系。
+
+Buffer Pool Manager 里有几个重要的成员：
+
+- pages：buffer pool 中缓存 pages 的指针数组
+- disk_manager：框架提供，可以用来读取 disk 上指定 page id 的 page 数据，或者向 disk 上给定 page id 对应的 page 里写入数据
+- page_table：刚才实现的 Extendible Hash Table，用来将 page id 映射到 frame id，即 page 在 buffer pool 中的位置
+- replacer：刚才实现的 LRU-K Replacer，在需要驱逐 page 腾出空间时，告诉我们应该驱逐哪个 page
+- free_list：空闲的 frame 列表
+
+Buffer Pool Manager 给上层调用者提供的两个最重要的功能是 new page 和 fetch page。我们先理一理 Buffer Pool Manager 完成这两项工作的流程：
+
+**New Page**
+
+上层调用者希望新建一个 page，调用 `NewPgImp`。
+
+如果当前 buffer pool 已满并且所有 page 都是 unevictable 的，直接返回。否则：
+
+- 如果当前 buffer pool 里还有空闲的 frame，创建一个空的 page 放置在 frame 中。
+- 如果当前 buffer pool 里没有空闲的 frame，但有 evitable 的 page，利用 LRU-K Replacer 获取可以驱逐的 frame id，将 frame 中原 page 驱逐，并创建新的 page 放在此 frame 中。驱逐时，
+  - 如果当前 frame 为 dirty(发生过写操作)，将对应的 frame 里的 page 数据写入 disk，并重置 dirty 为 false。清空 frame 数据，并移除 page_table 里的 page id，移除 replacer 里的引用记录。
+  - 如果当前 frame 不为 dirty，直接清空 frame 数据，并移除 page_table 里的 page id，移除 replacer 里的引用记录。
+
+在 replacer 里记录 frame 的引用记录，并将 frame 的 evictable 设为 false。因为上层调用者拿到 page 后可能需要对其进行读写操作，此时 page 必须驻留在内存中。
+
+使用 `AllocatePage` 分配一个新的 page id(从0递增)。
+
+将此 page id 和存放 page 的 frame id 插入 page_table。
+
+page 的 pin_count 加 1。
+
+**Fetch Page**
+
+上层调用者给定一个 page id，Buffer Pool Manager 返回对应的 page 指针。调用 `FetchPgImp`。
+
+假如可以在 buffer pool 中找到对应 page，直接返回。
+
+否则需要将磁盘上的 page 载入内存，也就是放进 buffer pool。
+
+如果当前 buffer pool 已满并且所有 page 都是 unevictable 的，直接返回空指针。否则同 New Page 操作，先尝试在 free list 中找空闲的 frame 存放需要读取的 page，如果没有 frame 空闲，就驱逐一张 page。获得一个空闲的 frame。
+
+通过 disk_manager 读取 page id 对应 page 的数据，存放在 frame 中。在 replacer 里记录引用，将 evictable 设为 false，将 page id 插入 page_table，page 的 pin_count 加 1。
+
+流程还是比较简单的，总的来说就是 buffer pool 里没空位也腾不出空位，直接返回，暂时处理不了请求，如果有空位，就先用空位，没空位但可以驱逐，就驱逐一个 page 腾出空位。这样就可以在内存中缓存一个 page 方便上层调用者操作。同时，还需要同步一些信息，比如 page_table 和 replacer，驱逐 page 时，如果是 dirty page 也需要先将其数据写回 disk。
+
+![](../../imgs/15-445-1-11.png)
+
+接下来说说 pin 和 unpin。
+
+当上层调用者新建一个 page 或者 fecth 一个 page 时，Buffer Pool Manager 会自动 pin 一下这个 page。接下来上层调用者对这个 page 进行一系列读写操作，操作完之后调用 unpin，告诉 Buffer Pool Manager，这个 page 我用完了，你可以把它直接丢掉或者 flash 掉了（也不一定真的可以，可能与此同时有其他调用者也在使用这个 page，具体能不能 unpin 掉要 Buffer Pool Manager 在内部判断一下 page 的 pin_count 是否为 0）。调用 unpin 时，同时传入一个 `is_dirty` 参数，告诉 Buffer Pool Manager 我刚刚对这个 page 进行的是读操作还是写操作。需要注意的是，Buffer Pool Manager 不能够直接将 page 的 dirty flag 设为 is_dirty。假设原本 dirty flag 为 true，则不能改变，代表其他调用者进行过写操作。只有原本 dirty flag 为 false 是，才能将 dirty flag 直接设为 is_dirty。
+
+整个流程大概就是这样。把流程理清楚，注意一些变量的同步，还是比较简单的。
+
+## Summary
+
+整个 project 1 难度不算大，coding + debugging 时间大概是 4 个小时左右。个人感觉难度最大的部分是 Extendible Hash Table，因为要进行一些比较 trick 的位运算操作，我是真的有点玩不转。Buffer Pool Manager 部分的流程比较复杂，细节比较多，但认真按注释编写应该不会有什么问题。
+
+由于所有数据结构都是粗暴的一把大锁锁住，代码的性能不尽如人意，这里留个坑，之后有机会优化一下。
+
+
