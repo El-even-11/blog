@@ -71,9 +71,9 @@ Project1 主要与 Bustub 的 storage manager 相关，分为三个部分：
 
 ### Extendible Hash Table Design
 
-这个部分要实现一个 extendible 哈希表，内部不可以用 built-in 的哈希表，比如 `unordered_map`。
+这个部分要实现一个 extendible 哈希表，内部不可以用 built-in 的哈希表，比如 `unordered_map`。这个哈希表在 Buffer Pool Manager 中主要用来存储 buffer pool 中 page id 和 frame id 的映射关系。
 
-Extendible Hash Table 主要由一个 directory 和多个 bucket 组成。
+Extendible Hash Table 由一个 directory 和多个 bucket 组成。
 - **directory**: 存放指向 bucket 的指针，是一个数组。用于寻找 key 对应 value 所在的 bucket。
 - **bucket**: 存放 value，是一个链表。一个 bucket 可以至多存放指定数量的 value。
 
@@ -149,10 +149,10 @@ bucket 1 的 local depth 为 1，其中存放的值实际上只用到了 H(K) �
 现在还剩下几个关键的问题：
 
 - dir 扩容时，新的指针应该指向哪里？
-  假如 global depth=2，原索引为 000b 001b 010b 011b，则扩容添加的索引为 100b 101b 110b 111b，可以看出低两位的值是一一对应的，因此新加的索引应指向对应索引指向的 bucket。
+  假如 global depth=2，原索引为 000b 001b 010b 011b，则扩容添加的索引为 100b 101b 110b 111b，可以看出低两位的值是一一对应的，新索引应指向低位对应索引的 bucket。我们把指向同一个 bucket 的指针称为兄弟指针。
 
 - 如何重新安排指针？
-  我们把指向同一个 bucket 的指针称为兄弟指针。重新安排指针实际上是重新安排指向需要 split 的 bucket 的兄弟指针。需要注意的是，兄弟指针不一定只有两个，而可以有 2^n 次个。例如下面这种情况：
+  重新安排指针实际上是重新安排指向需要 split 的 bucket 的兄弟指针。需要注意的是，兄弟指针不一定只有两个，而可以有 2^n 次个。例如下面这种情况：
     
   ![](../../imgs/15-445-1-9.png)  
 
@@ -178,5 +178,40 @@ Extendible Hash Table 是要保证线程安全的。目前我的策略是一把�
 
 
 ## LRU-K Replacer
+
+### LRU-K Replacer Design
+
+LRU-K Replacer 用于存储 buffer pool 中 page 被引用的记录，并根据引用记录来选出在 buffer pool 满时需要被驱逐的 page。
+
+LRU 应该都比较熟悉了，LRU-K 则是一个小小的变种。
+
+在普通的 LRU 中，我们仅需记录 page 最近一次被引用的时间，在驱逐时，选择最近一次引用时间最早的 page。
+
+在 LRU-K 中，我们需要记录 page 最近 K 次被引用的时间。假如 list 中所有 page 都被引用了大于等于 K 次，则比较最近第 K 次被引用的时间，驱逐最早的。假如 list 中存在引用次数少于 K 次的 page，则将这些 page 挑选出来，用普通的 LRU 来比较这些 page 第一次被引用的时间，驱逐最早的。
+
+![](../../imgs/15-445-1-10.png)
+
+另外还需要注意一点，LRU-K Replacer 中的 page 有一个 evictable 属性，当一个 page 的 evicitable 为 false 时，上述算法跳过此 page 即可。这里主要是为了上层调用者可以 pin 住一个 page，对其进行一些读写操作，此时需要保证 page 驻留在内存中。
+
+LRU-K 的算法还是比较简单的，主要看具体实现部分。
+
+### LRU-K Replacer Implementation
+
+先是线程安全，LRU-K Replacer 的线程安全似乎并没有什么可以优化的地方，直接加一把大锁就可以了。
+
+传统的 LRU 用哈希表加双向链表实现，可以保证各操作均为 O(1) 的复杂度。由于 LRU-K 需要保存 K 次引用的记录，就不能再用双向链表了。
+
+先介绍一下 frame 的概念。page 放置在 buffer pool 的 frame 中，frame 的数量是固定的，即 buffer pool 的大小。如果 buffer pool 中的一个 frame 没有用来放置任何 page，则说该 frame 是空闲的。如果所有 frame 都不是空闲的，则表明 buffer pool 已满。
+
+Replacer 里有一张哈希表，用于存储不同 frame 的信息。将 frame 的信息封装成 `FrameInfo ` 类。哈希表的 key 为 frame id，value 为 FrameInfo。
+
+FrameInfo 里用链表保存 page 最近 K 次被引用的时间戳。这里的时间戳不适合也不需要用真正的 Unix 时间戳，直接用一个从 0 递增的 `size_t` 变量 `curr_timestamp` 来表示即可，每次引用 Replacer 中的任一 page 时，记录该次引用的时间戳为 `curr_timestamp`，并将其加 1。`size_t` 的大小也保证了这个变量不会溢出。
+
+后续的实现比较简单，按照 LRU-K 算法的逻辑简单遍历查找最早的访问时间戳即可。
+
+evictable 等变量的变化比较简单，按照文档来就可以，这里就不再多说了。
+
+
+## Buffer Pool Manager Instance
 
 TODO
