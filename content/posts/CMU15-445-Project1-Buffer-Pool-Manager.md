@@ -95,7 +95,7 @@ global depth 的初始值为 0，取 H(K) 的低 0 位为索引，永远为 0，
 
 ![](../../imgs/15-445-1-2.png)
 
-我们指定 bucket 的容量为 2，现在向表中插入 KV 对。方便起见，就不具体指明 V 的值了，仅关注 K。K 从 0 递增，并且假设 H(K) = K。
+我们指定 bucket 的容量为 2，现在向表中插入 KV 对。方便起见，就不具体指明 V 的值了，仅关注 K。假设 H(K) = K。
 
 首先插入 0 和 1。由于 global depth 为 0，所以 H(K) 计算出的 index 均为 0：
 
@@ -243,7 +243,7 @@ Buffer Pool Manager 给上层调用者提供的两个最重要的功能是 new p
 
 在 replacer 里记录 frame 的引用记录，并将 frame 的 evictable 设为 false。因为上层调用者拿到 page 后可能需要对其进行读写操作，此时 page 必须驻留在内存中。
 
-使用 `AllocatePage` 分配一个新的 page id(从0递增)。
+使用 `AllocatePage` 分配一个新的 page id(从 0 递增)。
 
 将此 page id 和存放 page 的 frame id 插入 page_table。
 
@@ -267,7 +267,7 @@ page 的 pin_count 加 1。
 
 接下来说说 pin 和 unpin。
 
-当上层调用者新建一个 page 或者 fecth 一个 page 时，Buffer Pool Manager 会自动 pin 一下这个 page。接下来上层调用者对这个 page 进行一系列读写操作，操作完之后调用 unpin，告诉 Buffer Pool Manager，这个 page 我用完了，你可以把它直接丢掉或者 flash 掉了（也不一定真的可以，可能与此同时有其他调用者也在使用这个 page，具体能不能 unpin 掉要 Buffer Pool Manager 在内部判断一下 page 的 pin_count 是否为 0）。调用 unpin 时，同时传入一个 `is_dirty` 参数，告诉 Buffer Pool Manager 我刚刚对这个 page 进行的是读操作还是写操作。需要注意的是，Buffer Pool Manager 不能够直接将 page 的 dirty flag 设为 is_dirty。假设原本 dirty flag 为 true，则不能改变，代表其他调用者进行过写操作。只有原本 dirty flag 为 false 时，才能将 dirty flag 直接设为 is_dirty。
+当上层调用者新建一个 page 或者 fecth 一个 page 时，Buffer Pool Manager 会自动 pin 一下这个 page。接下来上层调用者对这个 page 进行一系列读写操作，操作完之后调用 unpin，告诉 Buffer Pool Manager，这个 page 我用完了，你可以把它直接丢掉或者 flush 掉了（也不一定真的可以，可能与此同时有其他调用者也在使用这个 page，具体能不能 unpin 掉要 Buffer Pool Manager 在内部判断一下 page 的 pin_count 是否为 0）。调用 unpin 时，同时传入一个 `is_dirty` 参数，告诉 Buffer Pool Manager 我刚刚对这个 page 进行的是读操作还是写操作。需要注意的是，Buffer Pool Manager 不能够直接将 page 的 dirty flag 设为 is_dirty。假设原本 dirty flag 为 true，则不能改变，代表其他调用者进行过写操作。只有原本 dirty flag 为 false 时，才能将 dirty flag 直接设为 is_dirty。
 
 整个流程大概就是这样。把流程理清楚，注意一些变量的同步，还是比较简单的。
 
@@ -276,5 +276,3 @@ page 的 pin_count 加 1。
 整个 project 1 难度不算大，coding + debug 时间大概是 4 个小时左右。个人感觉难度最大的部分是 Extendible Hash Table，因为要进行一些比较 tricky 的位运算操作，我是真的有点玩不转。Buffer Pool Manager 部分的流程比较复杂，细节比较多，但认真按注释编写应该不会有什么问题。
 
 由于所有数据结构都是粗暴的一把大锁锁住，代码的性能不尽如人意，这里留个坑，之后有机会优化一下。
-
-

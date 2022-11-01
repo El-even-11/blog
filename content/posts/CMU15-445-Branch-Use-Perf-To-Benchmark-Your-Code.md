@@ -3,7 +3,7 @@ title: "CMU15-445 Branch: Use Perf to Benchmark Your Code"
 date: 2022-10-10T15:18:17+08:00
 # weight: 1
 # aliases: ["/first"]
-tags: ["first"]
+tags: ["Benchmark"]
 author: "Me"
 # author: ["Me", "You"] # multiple authors
 showToc: true
