@@ -96,7 +96,6 @@ ReaderWriterLatch rwlatch_;
 B+树中的 tree oage 数据均存放在 page 的 data 成员中。
 
 **B_PLUS_TREE_PAGE**
-
 `b_plus_tree_page` 是另外两个 page 的父类，即 B+树中 tree page 的抽象。
 
 ```cpp
@@ -116,7 +115,6 @@ page_id_t page_id_; // 4 Byte
 page data 的 4KB 中，24Byte 用于存放 header，剩下的则用于存放 tree page 的数据，即 KV 对。
 
 **B_PLUS_TREE_INTERNAL_PAGE**
-
 对应 B+ 树中的内部节点。
 
 ```cpp
@@ -170,7 +168,6 @@ Task1 的主要内容就是这些。实际上要实现的内容非常简单，�
 Task2 是单线程 B+ 树的重点。首先提供演示一个 B+ 树插入删除操作的 [网站](https://goneill.co.nz/btree-demo.php)。主要是看看 B+ 树插入删除的各种细节变化。当然具体实现是自由的，这仅仅是一个示例。
 
 **Search**
-
 先从最简单的 Point Search 开始。B+ 树的结构应该都比较熟悉了，节点分为 internal page 和 leaf page，每个 page 上的 key 有序排列。当拿到一个 key 需要查找对应的 value 时，首先需要经由 internal page 递归地向下查找，最终找到 key 所在的 leaf page。这个过程可以简化为一个函数 `Findleaf()`。
 
 `Findleaf()` 从 root page 开始查找。在查找到 leaf page 时直接返回，否则根据 key 在当前 internal page 中找到对应的 child page id，递归调用 `Findleaf`。根据 key 查找对应 child id 时，由于 key 是有序的，可以直接进行二分搜索。15-445 Lecture 中也介绍了一些其他的方法，比如用 SIMD 并行比较，插值法等等。在这里二分搜索就可以了。
@@ -248,8 +245,7 @@ auto leaf_page = reinterpret_cast<B_PLUS_TREE_LEAF_PAGE_TYPE *>(page->GetData())
 
 Insert 的整个流程大致就是先向下递归找到 leaf page，插入 KV 后再向上递归分裂。
 
-**Remove**
-
+**Delete**
 同样地，先找到 leaf page。删除 leaf page 中 key 对应的 KV 对后，检查 size 是否小于 min size。如果小于的话，首先尝试从两侧的兄弟节点中偷一个 KV 对。注意只能从兄弟节点，即父节点相同的节点中选取。假如存在一侧节点有富余的 KV 对，则成功偷取，结束操作。若两侧都没有富余的 KV 对，则选择一侧节点与其合并。
 
 偷取的过程比较简单，从左侧节点偷取时，把左侧节点最后一个 KV 对转移至当前节点第一个 KV 对，从右侧节点偷取时，把右侧节点的 KV 对转移至当前节点最后一个 KV 对。leaf page 和 internal page 的偷取过程基本相同，仅需注意 internal page 偷取后更新子节点的父节点指针。
@@ -268,6 +264,55 @@ Insert 的整个流程大致就是先向下递归找到 leaf page，插入 KV �
 
 另外，在合并时，两个 page 合并成一个 page，另一个 page 应该删除，释放资源。删除 page 时，仍是调用 buffer pool 的 `DeletePage()` 函数。
 
-和 Insert 类似，Remove 过程也是先向下递归查询 leaf page，不满足 min size 后先尝试偷取，无法偷取则合并，并向上递归地检查是否满足 min size。
+和 Insert 类似，Delete 过程也是先向下递归查询 leaf page，不满足 min size 后先尝试偷取，无法偷取则合并，并向上递归地检查是否满足 min size。
 
-至此，Checkpoint1 的内容已经全部完成。其实有很多细节我都没有提到，比如二分搜索的边界问题，如何查询左右兄弟节点，如何在兄弟节点间移动 KV 对等等。这些都属于比较细枝末节的问题，比较耗时，但认真思考应该都能够解决，更重要的是，这些实现都是自由的。
+至此，Checkpoint1 的内容已经全部完成。其实有很多细节我都没有提到，比如二分搜索的边界问题，如何查询左右兄弟节点，如何在兄弟节点间移动 KV 对，第一次 Insert 树为空怎么办等等。这些都属于比较细枝末节的问题，比较折磨人，但认真思考应该都能够解决。更重要的是，这些实现都是自由的。
+
+## Checkpoint2 Multi Thread B+Tree
+
+Checkpoint2 也分为两个部分：
+- Task3：Index Iterator。实现 leaf page 的 range scan。
+- Task4：Concurrent Index。支持 B+ 树并发操作。
+
+### Task3 Index Iterator
+这个部分没有什么太多好说的，实现一个遍历 leaf page 的迭代器。在迭代器中存储当前 leaf page 的指针和当前停留的位置即可。遍历完当前 page 后，通过 next page id 找到下一个 leaf page。同样，记得 unpin 已经遍历完的 page。关于可能存在的死锁问题，暂时不讨论。
+
+### Task4 Concurrent Index
+这是并发 B+ 树的重点，应该也是 Project2 中最难的部分。我们要使此前实现的 B+ 树支持并发的 Search/Insert/Delete 操作。整棵树一把锁逻辑上来说当然是可以的，但性能也会可想而知地糟糕。在这里，我们会使用一种特殊的加锁方式，叫做 latch crabbing。顾名思义，就像螃蟹一样，移动一只脚，放下，移动另一只脚，再放下。基本思想是：
+1. 先锁住 parent page，
+2. 再锁住 child page，
+3. 假设 child page 是*安全*的，则释放 parent page 的锁。*安全*指当前 page 在当前操作下一定不会发生 split/steal/merge。同时，*安全*对不同操作的定义是不同的，Search 时，任何节点都安全；Insert 时，判断 max size；Delete 时，判断 min size。
+
+这么做的原因和正确性还是比较明显的。当 page 为安全的时候，当前操作仅可能改变此 page 及其 child page 的值，因此可以提前释放掉其祖先的锁来提高并发性能。
+
+**Search**
+Search 时，从 root page 开始，先给 parent 上读锁，再给 child page 上读锁，然后释放 parent page 的锁。如此向下递归。
+
+![](../../imgs/15-445-2-9.png)
+![](../../imgs/15-445-2-10.png)
+![](../../imgs/15-445-2-11.png)
+![](../../imgs/15-445-2-12.png)
+
+**Insert**
+Insert 时，从 root page 开始，先给 parent 上写锁，再给 child page 上写锁。假如 child page 安全，则释放所有祖先的锁；否则不释放锁，继续向下递归。
+
+![](../../imgs/15-445-2-13.png)
+![](../../imgs/15-445-2-14.png)
+![](../../imgs/15-445-2-15.png)
+![](../../imgs/15-445-2-16.png)
+
+在 child page 不安全时，需要持续持有祖先的写锁。并在出现安全的 child page 后，释放所有祖先写锁。如何记录哪些 page 当前持有锁？这里就要用到在 Checkpoint1 里一直没有提到的一个参数，`transaction`。
+
+transaction 就是 Bustub 里的事务。在 Project2 中，可以暂时不用理解事务是什么，而是将其看作当前在对 B+ 树进行操作的线程。调用 transaction 的 `AddIntoPageSet()` 方法，来跟踪当前线程获取的 page 锁。在发现一个安全的 child page 后，将 transaction 中记录的 page 锁全部释放掉。按理来说，释放锁的顺序可以从上到下也可以从下到上，但由于上层节点的竞争一般更加激烈，所以最好是从上到下地释放锁。
+
+在完成整个 Insert 操作后，释放所有锁。
+
+**Delete**
+和 Insert 基本一样。仅是判断是否安全的方法不同（检测 min size）。需要另外注意的是，当需要 steal/merge sibling 时，也需要对 sibling 加锁。并在完成 steal/merge 后马上释放。这里是为了避免其他线程正在对 sibling 进行 Search/Insert 操作，从而发生 data race。这里的加锁就不需要在 transaction 里记录了，只是临时使用。
+
+**Implementation**
+可以发现，latch crabbing 是在 Find Leaf 的过程中进行的，因此需要修改 Checkpoint1 中的 `FindLeaf()`，根据操作的不同沿途加锁。
+
+**When should we unpin pages?**
+
+
