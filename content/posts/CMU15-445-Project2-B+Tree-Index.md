@@ -196,7 +196,7 @@ auto leaf_page = reinterpret_cast<B_PLUS_TREE_LEAF_PAGE_TYPE *>(page->GetData())
 
 我们在拿到 page id 后，调用 buffer pool 的 `FetchPage()` 函数来获取对应的 page 指针。要注意的是，在使用完 page 之后，需要将 page unpin 掉，否则最终会导致 buffer pool 中的所有 page 都被 pin 住，无法从 disk 读取其他的 page。
 
-比较合适的做法是，找出 page 最后一次被使用的地方，并在最后一次使用后 unpin。
+比较合适的做法是，在本次操作中，找出 page 最后一次被使用的地方，并在最后一次使用后 unpin。
 
 **Insert**
 
@@ -272,6 +272,34 @@ Insert 的整个流程大致就是先向下递归找到 leaf page，插入 KV �
 
 和 Insert 类似，Delete 过程也是先向下递归查询 leaf page，不满足 min size 后先尝试偷取，无法偷取则合并，并向上递归地检查是否满足 min size。
 
+### Debug Your B+Tree
+
+再次感叹真正的世界一流 CS 高校对课程项目设计的用心与体贴。为了方便调试，15-445 竟然帮我们实现了 B+ 树的可视化。有两种主要的方式：
+
+- 使用已实现好的 b_plus_tree_printer 工具，可以自己对 B+ 树执行插入、删除等操作，并将结果输出为 dot 文件。
+```bash
+$ # To build the tool
+$ mkdir build
+$ cd build
+$ make b_plus_tree_printer -j$(nproc)
+$ ./bin/b_plus_tree_printer
+>> ... USAGE ...
+>> 5 5 # set leaf node and internal node max size to be 5
+>> f input.txt # Insert into the tree with some inserts 
+>> g my-tree.dot # output the tree to dot format 
+>> q # Quit the test (Or use another terminal) 
+```
+- 在代码中调用 `BPlusTree` 的 `Draw()` 函数，可以在指定目录生成一个 dot 文件。
+
+拿到 dot 文件后，可以在本地生成对应的 B+ 树 png：
+```bash
+dot -Tpng -O my-tree.dot
+```
+或者把文件内容复制到 [这里](http://dreampuf.github.io/GraphvizOnline/)。（更推荐，生成 svg，对 B+ 树大小无限制）
+
+这个可视化工具对早期发现 B+ 树的各种基本 bug 非常有用。
+
+
 至此，Checkpoint1 的内容已经全部完成。其实有很多细节我都没有提到，比如二分搜索的边界问题，如何查询左右兄弟节点，如何在兄弟节点间移动 KV 对，第一次 Insert 树为空怎么办等等。这些都属于比较细枝末节的问题，比较折磨人，但认真思考应该都能够解决。更重要的是，这些实现都是自由的。
 
 ## Checkpoint2 Multi Thread B+Tree
@@ -323,8 +351,56 @@ transaction 就是 Bustub 里的事务。在 Project2 中，可以暂时不用�
 
 可以发现，latch crabbing 是在 Find Leaf 的过程中进行的，因此需要修改 Checkpoint1 中的 `FindLeaf()`，根据操作的不同沿途加锁。
 
-**When should we unpin pages?**
+### When should we unlatch and unpin pages?
+在这里，我还想提一提 unpin page 的问题。在前面我只是简单地说了一句在最后一次使用的地方 unpin。但实际上，这个问题在整个 Project2 中时时困扰着我。特别是在 Checkpoint2 中引入 page 锁之后。到底该如何优雅地释放我们获得的 page？
 
+首先，为什么要 unpin page？这个应该比较清楚了，避免对 buffer pool 一直占用。可以理解为一种资源的泄露。
 
+说到资源泄露，可以自然地想到 RAII。RAII 的主要思想是，在初始化时获取资源，在析构时释放资源。这样就避免了程序中途退出，或抛出异常后，资源没有被成功释放。常常用在 open socket、acquire mutex 等操作中。其实我们在 Project1 中已经遇到了 RAII 的用法：
 
+```cpp
+std::scoped_lock<std::mutex> lock(mutex_);
+```
 
+这里其实就是一个经典的 RAII。在初始化 lock 时，调用 `mutex_.Lock()`，在析构 lock 时，调用 `mutex_.Unlock()`。这样就通过简单的一行代码成功保证了在 lock 的作用域中对 mutex 全程上锁。离开 lock 的作用域后，由于 lock 析构，锁自动释放。
+
+一开始，我也想过用这种方法来管理 page。例如编写一个类 PageManager，在初始化时，fetch page & latch page，在析构时，unlatch page & unpin page。这个想法好像还行，但是遇到了一个明显的问题：page 会在不同函数间互相传递，以及存在离开作用域后仍需持有 page 资源的情况，比如 latch crabbing 时可能需要跨函数持锁。或许可以通过传递 PageManager 指针的方式来处理，但这样似乎更加复杂了。
+
+此外，还有一个问题。比如 Insert 操作时，假如需要分裂，会向下递归沿途持锁，然后向上递归进行分裂。在分裂时，需要重新从 buffer pool 获取 page。要注意的是，这里获取 page 时不能够对 page 加锁，因为此前向下递归时 page 已经加过锁了，同一个线程再加锁会抛异常。
+
+![](../imgs/15-445-2-17.png)
+
+比如这里的例子。在向上递归时，我们已经获取过 parent page 的锁，因此再次从 buffer pool 获取 parent page 时，无需对 parent page 再次加锁。
+
+那有没有办法能够知道我们对哪些 page 加过锁？transaction。也就是说，如果一个 page 出现在 transaction 的 page set 中，就代表这个线程已经持有了这个 page 的锁。
+
+当然，通过认真分析各个操作获取 page 的路径，我们也可以发现持锁的规律。
+
+**Search**
+仅向下递归，拿到 child page 就释放 parent page。这个比较简单。获取 page 的路径从 root 到 leaf 是一条线。到达 leaf 时，仅持有 leaf 的资源。
+
+**Insert**
+先向下递归，可能会持有多个 parent page 的锁。获取 page 的路径从 root 到 leaf 也是一条线，区别是，到达 leaf 时，还可能持有其祖先的资源。再向上递归。向上递归的路径与向下递归的完全重合，仅是方向相反。因此，向上递归时不需要重复获取 page 资源，可以直接从 transaction 里拿到 page 指针，绕过对 buffer pool 的访问。在分裂时，新建的 page 由于还未连接到树中，不可能被其他线程访问到，因此也不需要上锁，仅需 unpin。
+
+**Delete**
+向下递归的情况与 Insert 相同，路径为一条线。到达 leaf page 后，情况有所不同。由于可能需要对 sibling 进行 steal/merge，还需获取 sibling 的资源。因此，在向上递归时，主要路径也与向下递归的重合，但除了这条线，还会沿途获取 sibling 的资源，sibling 需要加锁，而 parent page 无需再次加锁。sibling 只是暂时使用，使用完之后可以直接释放。而向下递归路径上的锁在整个 Delete 操作完成之后再释放。
+
+![](../../imgs/15-445-2-18.png)
+
+经过上面的讨论，可以得出我们释放资源的时机：向下递归路径上的 page 需要全程持有（除非节点安全，提前释放），在整个操作完成后统一释放。其余 page 要么是重复获取，要么是暂时获取。重复获取无需加锁，使用完后直接 unpin。暂时获取（steal/merge sibling）需要加锁，使用完后 unlatch & unpin。
+
+### Deadlock？
+可以看出，需要持多个锁时，都是从上到下地获取锁，获取锁的方向是相同的。在对 sibling 上锁时，一定持有其 parent page 的锁，因此不可能存在另一个既持有 sibling 锁又持有 parent page 锁的线程来造成循环等待。因此，死锁是不存在的。
+
+但如果把 Index Iterator 也纳入讨论，就有可能产生死锁了。Index Iterator 是从左到右地获取 leaf page 的锁，假如存在一个需要 steal/merge 的 page 尝试获取其 left sibling 的锁，则一个从左到右，一个从右到左，可能会造成循环等待，也就是死锁。因此在 Index Iterator 无法获取锁时，应放弃获取。
+
+### Optimization
+对于 latch crabbing，存在一种比较简单的优化。在普通的 latch crabbing 中，Insert/Delete 均需对节点上写锁，而越上层的节点被访问的可能性越大，锁竞争也越激烈，频繁对上层节点上互斥的写锁对性能影响较大。因此可以做出如下优化：
+
+Search 操作不变，在 Insert/Delete 操作中，我们可以先乐观地认为不会发生 split/steal/merge，对沿途的节点上读锁，并及时释放，对 leaf page 上写锁。当发现操作对 leaf page 确实不会造成 split/steal/merge 时，可以直接完成操作。当发现操作会使 leaf page split/steal/merge 时，则放弃所有持有的锁，从 root page 开始重新悲观地进行这次操作，即沿途上写锁。
+
+这个优化实现起来比较简单，修改一下 `FindLeaf()` 即可。
+
+## Summary
+
+整个 Project2 的内容大致就是这些。难度相对于 Project1 可以说是陡增。Checkpoint1 的难点主要在细节的处理上，Checkpoint2 的难点则是对 latch crabbing 的正确理解。当看到自己从 0 实现的 B+ 树能够正确运行，特别是可视化时，还是很有成就感的。
