@@ -377,12 +377,15 @@ std::scoped_lock<std::mutex> lock(mutex_);
 当然，通过认真分析各个操作获取 page 的路径，我们也可以发现持锁的规律。
 
 **Search**
+
 仅向下递归，拿到 child page 就释放 parent page。这个比较简单。获取 page 的路径从 root 到 leaf 是一条线。到达 leaf 时，仅持有 leaf 的资源。
 
 **Insert**
+
 先向下递归，可能会持有多个 parent page 的锁。获取 page 的路径从 root 到 leaf 也是一条线，区别是，到达 leaf 时，还可能持有其祖先的资源。再向上递归。向上递归的路径与向下递归的完全重合，仅是方向相反。因此，向上递归时不需要重复获取 page 资源，可以直接从 transaction 里拿到 page 指针，绕过对 buffer pool 的访问。在分裂时，新建的 page 由于还未连接到树中，不可能被其他线程访问到，因此也不需要上锁，仅需 unpin。
 
 **Delete**
+
 向下递归的情况与 Insert 相同，路径为一条线。到达 leaf page 后，情况有所不同。由于可能需要对 sibling 进行 steal/merge，还需获取 sibling 的资源。因此，在向上递归时，主要路径也与向下递归的重合，但除了这条线，还会沿途获取 sibling 的资源，sibling 需要加锁，而 parent page 无需再次加锁。sibling 只是暂时使用，使用完之后可以直接释放。而向下递归路径上的锁在整个 Delete 操作完成之后再释放。
 
 ![](../../imgs/15-445-2-18.png)
