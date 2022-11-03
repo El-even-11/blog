@@ -93,7 +93,7 @@ ReaderWriterLatch rwlatch_;
 
 其中，`data_` 是实际存放 page 数据的地方，大小为 `BUSTUB_PAGE_SIZE`，为 4KB。其他的成员是 page 的 metadata。
 
-B+树中的 tree oage 数据均存放在 page 的 data 成员中。
+B+树中的 tree age 数据均存放在 page 的 data 成员中。
 
 **B_PLUS_TREE_PAGE**
 
