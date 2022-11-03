@@ -368,7 +368,7 @@ std::scoped_lock<std::mutex> lock(mutex_);
 
 此外，还有一个问题。比如 Insert 操作时，假如需要分裂，会向下递归沿途持锁，然后向上递归进行分裂。在分裂时，需要重新从 buffer pool 获取 page。要注意的是，这里获取 page 时不能够对 page 加锁，因为此前向下递归时 page 已经加过锁了，同一个线程再加锁会抛异常。
 
-![](../imgs/15-445-2-17.png)
+![](../../imgs/15-445-2-17.png)
 
 比如这里的例子。在向上递归时，我们已经获取过 parent page 的锁，因此再次从 buffer pool 获取 parent page 时，无需对 parent page 再次加锁。
 
