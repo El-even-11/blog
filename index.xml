@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Eleven&#39;s Blog</title>
+    <link>https://el-even-11.github.io/blog/</link>
+    <description>Recent content on Eleven&#39;s Blog</description>
+    <image>
+      <url>https://el-even-11.github.io/blog/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</url>
+      <link>https://el-even-11.github.io/blog/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
+    </image>
+    <generator>Hugo -- gohugo.io</generator>
+    <lastBuildDate>Tue, 01 Nov 2022 20:10:29 +0800</lastBuildDate><atom:link href="https://el-even-11.github.io/blog/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>CMU15-445 Project2 B&#43;Tree Index</title>
+      <link>https://el-even-11.github.io/blog/posts/cmu15-445-project2-b&#43;tree-index/</link>
+      <pubDate>Tue, 01 Nov 2022 20:10:29 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/cmu15-445-project2-b&#43;tree-index/</guid>
+      <description>Building a Concurrent B&#43;Tree Index.</description>
+    </item>
+    
+    <item>
+      <title>CMU15-445 Branch: Use Perf to Benchmark Your Code</title>
+      <link>https://el-even-11.github.io/blog/posts/cmu15-445-branch-use-perf-to-benchmark-your-code/</link>
+      <pubDate>Mon, 10 Oct 2022 15:18:17 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/cmu15-445-branch-use-perf-to-benchmark-your-code/</guid>
+      <description>Record an experience of using perf to benchmark.</description>
+    </item>
+    
+    <item>
+      <title>CMU15-445 Project1 Buffer Pool Manager</title>
+      <link>https://el-even-11.github.io/blog/posts/cmu15-445-project1-buffer-pool-manager/</link>
+      <pubDate>Sat, 08 Oct 2022 22:11:18 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/cmu15-445-project1-buffer-pool-manager/</guid>
+      <description>Implement Buffer Pool Manager for CMU BUSTUB</description>
+    </item>
+    
+    <item>
+      <title>MIT6.824 Lab3 KVService</title>
+      <link>https://el-even-11.github.io/blog/posts/mit6.824-lab3-kvservice/</link>
+      <pubDate>Thu, 22 Sep 2022 18:16:09 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/mit6.824-lab3-kvservice/</guid>
+      <description>Fault-tolerant KV Service based on Raft</description>
+    </item>
+    
+    <item>
+      <title>MIT6.824 Notes</title>
+      <link>https://el-even-11.github.io/blog/posts/mit6.824-notes/</link>
+      <pubDate>Wed, 21 Sep 2022 21:41:15 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/mit6.824-notes/</guid>
+      <description>Notes for MIT6.824 Distributed System</description>
+    </item>
+    
+    <item>
+      <title>MIT6.824 Lab2 Raft</title>
+      <link>https://el-even-11.github.io/blog/posts/mit6.824-lab2-raft/</link>
+      <pubDate>Sat, 25 Jun 2022 00:10:08 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/mit6.824-lab2-raft/</guid>
+      <description>The implementation of Raft consensus algorithm.</description>
+    </item>
+    
+    <item>
+      <title>Hugo Test</title>
+      <link>https://el-even-11.github.io/blog/posts/hugo-test/</link>
+      <pubDate>Fri, 20 May 2022 13:42:01 +0800</pubDate>
+      
+      <guid>https://el-even-11.github.io/blog/posts/hugo-test/</guid>
+      <description>Desc Text.</description>
+    </item>
+    
+    
+  </channel>
+</rss>
