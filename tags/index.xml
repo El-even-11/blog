@@ -2,65 +2,65 @@
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
     <title>Tags on Eleven&#39;s Blog</title>
-    <link>https://el-even-11.github.io/blog/tags/</link>
+    <link>https://blog.eleven.wiki/tags/</link>
     <description>Recent content in Tags on Eleven&#39;s Blog</description>
     <image>
-      <url>https://el-even-11.github.io/blog/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</url>
-      <link>https://el-even-11.github.io/blog/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
+      <url>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</url>
+      <link>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
     </image>
     <generator>Hugo -- gohugo.io</generator>
-    <lastBuildDate>Tue, 01 Nov 2022 20:10:29 +0800</lastBuildDate><atom:link href="https://el-even-11.github.io/blog/tags/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Tue, 01 Nov 2022 20:10:29 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/tags/index.xml" rel="self" type="application/rss+xml" />
     <item>
       <title>Database</title>
-      <link>https://el-even-11.github.io/blog/tags/database/</link>
+      <link>https://blog.eleven.wiki/tags/database/</link>
       <pubDate>Tue, 01 Nov 2022 20:10:29 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/tags/database/</guid>
+      <guid>https://blog.eleven.wiki/tags/database/</guid>
       <description></description>
     </item>
     
     <item>
       <title>Benchmark</title>
-      <link>https://el-even-11.github.io/blog/tags/benchmark/</link>
+      <link>https://blog.eleven.wiki/tags/benchmark/</link>
       <pubDate>Mon, 10 Oct 2022 15:18:17 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/tags/benchmark/</guid>
+      <guid>https://blog.eleven.wiki/tags/benchmark/</guid>
       <description></description>
     </item>
     
     <item>
       <title>Consensus Algorithm</title>
-      <link>https://el-even-11.github.io/blog/tags/consensus-algorithm/</link>
+      <link>https://blog.eleven.wiki/tags/consensus-algorithm/</link>
       <pubDate>Thu, 22 Sep 2022 18:16:09 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/tags/consensus-algorithm/</guid>
+      <guid>https://blog.eleven.wiki/tags/consensus-algorithm/</guid>
       <description></description>
     </item>
     
     <item>
       <title>Distributed System</title>
-      <link>https://el-even-11.github.io/blog/tags/distributed-system/</link>
+      <link>https://blog.eleven.wiki/tags/distributed-system/</link>
       <pubDate>Thu, 22 Sep 2022 18:16:09 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/tags/distributed-system/</guid>
+      <guid>https://blog.eleven.wiki/tags/distributed-system/</guid>
       <description></description>
     </item>
     
     <item>
       <title>Raft</title>
-      <link>https://el-even-11.github.io/blog/tags/raft/</link>
+      <link>https://blog.eleven.wiki/tags/raft/</link>
       <pubDate>Thu, 22 Sep 2022 18:16:09 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/tags/raft/</guid>
+      <guid>https://blog.eleven.wiki/tags/raft/</guid>
       <description></description>
     </item>
     
     <item>
       <title>Hello world</title>
-      <link>https://el-even-11.github.io/blog/tags/hello-world/</link>
+      <link>https://blog.eleven.wiki/tags/hello-world/</link>
       <pubDate>Fri, 20 May 2022 13:42:01 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/tags/hello-world/</guid>
+      <guid>https://blog.eleven.wiki/tags/hello-world/</guid>
       <description></description>
     </item>
     

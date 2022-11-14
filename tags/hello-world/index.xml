@@ -2,20 +2,20 @@
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
     <title>Hello world on Eleven&#39;s Blog</title>
-    <link>https://el-even-11.github.io/blog/tags/hello-world/</link>
+    <link>https://blog.eleven.wiki/tags/hello-world/</link>
     <description>Recent content in Hello world on Eleven&#39;s Blog</description>
     <image>
-      <url>https://el-even-11.github.io/blog/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</url>
-      <link>https://el-even-11.github.io/blog/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
+      <url>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</url>
+      <link>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
     </image>
     <generator>Hugo -- gohugo.io</generator>
-    <lastBuildDate>Fri, 20 May 2022 13:42:01 +0800</lastBuildDate><atom:link href="https://el-even-11.github.io/blog/tags/hello-world/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Fri, 20 May 2022 13:42:01 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/tags/hello-world/index.xml" rel="self" type="application/rss+xml" />
     <item>
       <title>Hugo Test</title>
-      <link>https://el-even-11.github.io/blog/posts/hugo-test/</link>
+      <link>https://blog.eleven.wiki/posts/hugo-test/</link>
       <pubDate>Fri, 20 May 2022 13:42:01 +0800</pubDate>
       
-      <guid>https://el-even-11.github.io/blog/posts/hugo-test/</guid>
+      <guid>https://blog.eleven.wiki/posts/hugo-test/</guid>
       <description>Desc Text.</description>
     </item>
     
