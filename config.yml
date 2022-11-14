@@ -1,4 +1,4 @@
-baseURL: "https://el-even-11.github.io/Blog"
+baseURL: "https://el-even-11.github.io/blog"
 title: Eleven's Blog
 paginate: 5
 theme: PaperMod
