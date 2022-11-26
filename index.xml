@@ -9,7 +9,16 @@
       <link>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
     </image>
     <generator>Hugo -- gohugo.io</generator>
-    <lastBuildDate>Tue, 01 Nov 2022 20:10:29 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Sat, 26 Nov 2022 22:57:31 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>CMU15-445 Project3 Query Execution</title>
+      <link>https://blog.eleven.wiki/posts/cmu15-445-project3-query-execution/</link>
+      <pubDate>Sat, 26 Nov 2022 22:57:31 +0800</pubDate>
+      
+      <guid>https://blog.eleven.wiki/posts/cmu15-445-project3-query-execution/</guid>
+      <description>Building the Query Execution Engine for Bustub.</description>
+    </item>
+    
     <item>
       <title>CMU15-445 Project2 B&#43;Tree Index</title>
       <link>https://blog.eleven.wiki/posts/cmu15-445-project2-b&#43;tree-index/</link>
