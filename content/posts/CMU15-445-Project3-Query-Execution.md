@@ -134,3 +134,31 @@ Bustub 采用 Top-to-Bottom。
 Bustub Query Execution 的大致结构就是这样，还有很多设计上的细节没有提到，比如 Tuple、Value、AbstractExpression 等等。接下来在具体实现中边看边聊。
 
 ## Task 1 Access Method Executors
+
+Task 1 包含 3 个算子，SeqScan、Insert 和 Delete。
+
+### SeqScan
+
+读取给定 table 中的所有 tuple，仅会出现在查询计划的叶子节点处。直接使用已经提供的 `TableIterator`。实现起来挺简单的。此外主要想聊聊 Bustub 中 table 的结构。
+
+![](../../imgs/15-445-3-4.png)
+
+首先，Bustub 有一个 Catalog。Catalog 提供了一系列 API，例如 `CreateTable()`、`GetTable()` 等等。Catalog 维护了几张 hashmap，保存了 table id 和 table name 到 table info 的映射关系。table id 由 Catalog 在新建 table 时自动分配，table name 则由用户指定。
+
+这里的 table info 包含了一张 table 的 metadata，有 schema、name、id 和指向 table heap 的指针。系统的其他部分想要访问一张 table 时，先使用 name 或 id 从 Catalog 得到 table info，再访问 table info 中的 table heap。
+
+table heap 是管理 table 数据的结构，包含 `InsertTuple()`、`MarkDelete()` 一系列 table 相关操作。table heap 本身并不直接存储 tuple 数据，tuple 数据都存放在 table page 中。table heap 可能由多个 table page 组成，仅保存其第一个 table page 的 page id。需要访问某个 table page 时，通过 page id 经由 buffer pool 访问。
+
+table page 是实际存储 table 数据的结构，父类是 page。相较于 page，table page 多了一些新的方法。table page 在 data 的开头存放了 next page id、prev page id 等信息，将多个 table page 连成一个双向链表，便于整张 table 的遍历操作。当需要新增 tuple 时，table heap 会找到当前属于自己的最后一张 table page，尝试插入，若最后一张 table page 已满，则新建一张 table page 插入 tuple。table page 低地址存放 header，tuple 从高地址也就是 table page 尾部开始插入。
+
+tuple 对应数据表中的一行数据。每个 tuple 都由 RID 唯一标识。RID 由 page id + slot num 构成。tuple 由 value 组成，value 的个数和类型由 table info 中的 schema 指定。
+
+value 则是某个字段具体的值，value 本身还保存了类型信息。
+
+将这些内容理清楚后，SeqScan 就很好实现了。需要注意的是，executor 本身并不保存查询计划的信息，应该通过 executor 的成员 plan 来得知该如何进行本次计算，例如 SeqScanExecutor 需要向 SeqScanPlanNode 询问自己该扫描哪张表。
+
+所有要用到的系统资源，例如 Catalog，Buffer Pool 等，都由 `ExecutorContext` 提供。
+
+### Insert & Delete
+
+Insert 和 Delete 这两个算子实现起来基本一样，也比较特殊。数据库最主要的操作就是增查删改。Bustub 暂时没有改的操作（实际删后再增也差不多），重点也在查上。Insert 和 Delete 一定是查询计划的根节点，且仅需返回一个代表修改行数的 tuple。
