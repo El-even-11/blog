@@ -214,7 +214,7 @@ group by（AggregateKey）为 `{t.x, t.y}`，aggregate（AggregateValue）为 `{
 
 需要额外注意的是 `count(column)` 和 `count(*)` 的区别，以及对空值的处理。另外，不需要考虑 hashmap 过大的情况，即整张 hashmap 可以驻留在内存中，不需要通过 Buffer Pool 调用 page 来存储。
 
-在 `Init()` 中计算出整张 hashmap 后，在 `Next()` 中直接利用 hashmap iterator 将结果依次取出。
+在 `Init()` 中计算出整张 hashmap 后，在 `Next()` 中直接利用 hashmap iterator 将结果依次取出。Aggregation 输出的 schema 形式为 group-bys + aggregates。
 
 ### NestedLoopJoin
 
@@ -301,7 +301,9 @@ SELECT * FROM t1 WHERE t1.x = t1.y + 1 AND t1.y > 0;
 
 在 NestedLoopJoin 里，我们要用到的是 `EvaluateJoin()`，也差不多，只不过输入的是左右两个 tuple 和 schema。返回值是表示 true 或 false 的 value。true 则代表成功匹配。
 
-到这里，NestedLoopJoin 就成功实现了。后来我看了一下 [RisingLight](https://github.com/risinglightdb/risinglight/blob/main/src/executor_v2/nested_loop_join.rs) 里的实现，我这个 rustacean 萌新的第一反应是惊为天人。大致是这样：
+到这里，NestedLoopJoin 就成功实现了。Join 输出的 schema 为 left schema + right schema。
+
+后来我看了一下 [RisingLight](https://github.com/risinglightdb/risinglight/blob/main/src/executor_v2/nested_loop_join.rs) 里的实现，我这个 rustacean 萌新的第一反应是惊为天人。大致是这样：
 
 ```rust
 pub async fn Execute(){
@@ -335,3 +337,73 @@ func Executor(out_ch, left_ch, right_ch chan Tuple) {
 
 ### NestedIndexJoin
 
+在进行 equi-join 时，如果发现 JOIN ON 右边的字段上建了 index，则 Optimizer 会将 NestedLoopJoin 优化为 NestedIndexJoin。具体实现和 NestedLoopJoin 差不多，只是在尝试匹配右表 tuple 时，会拿 join key 去 B+Tree Index 里进行查询。如果查询到结果，就拿着查到的 RID 去右表获取 tuple 然后装配成结果输出。其他的就不再多说了。
+
+## Task 3 Sort + Limit Executors and Top-N Optimization
+
+Task 3 中要实现 3 个算子，Sort、Limit 和 TopN，以及将 Limit + Sort 在 Optimizer 中优化为 TopN。
+
+### Sort
+
+Sort 也是 pipeline breaker。在 `Init()` 中读取所有下层算子的 tuple，并按 ORDER BY 的字段升序或降序排序。Sort 算子说起来比较简单，实现也比较简单，主要需要自定义 `std::sort()`。
+
+`std::sort()` 的第三个参数可以传入自定义的比较函数。直接传入一个 lambda 匿名函数。由于要访问成员 `plan_` 来获取排序的字段，lambda 需要捕获 this 指针。另外，排序字段可以有多个，按先后顺序比较。第一个不相等，直接得到结果；相等，则比较第二个。不会出现所有字段全部相等的情况。
+
+```cpp
+std::sort(sorted_tuples_.begin(), sorted_tuples_.end(), [this](const Tuple &a, const Tuple &b) {
+    for (auto [order_by_type, expr] : plan_->GetOrderBy()) {
+      // compare and return ... 
+    }
+    UNREACHABLE("doesn't support duplicate key");
+});
+```
+
+### Limit
+
+和 SeqScan 基本一模一样，只不过在内部维护一个 count，记录已经 emit 了多少 tuple。当下层算子空了或 count 达到规定上限后，不再返回新的 tuple。
+
+### TopN
+
+仅需返回最大/最小的 n 个 tuple。一开始想着要实现一个 fixed-size priority queue，即 queue 大小超过限制时自动抛弃最后一个元素以减小内存占用，但后来实在不想自己重写一遍二叉堆，就开摆了。直接用 `std::priority_queue` 加自定义比较函数，然后在 `Init()` 中遍历下层算子所有 tuple，全部塞进优先队列后截取前 n 个。再 `Next()` 里一个一个输出。（是不是和 Limit + Sort 没什么区别？都是 O(nlogn)
+
+### Sort + Limit As TopN
+
+这是 Project 3 里最后一个必做的小问。终于不是实现算子了，而是在 Optimizer 里增加一条规则，将 Sort + Limit 优化为 TopN。先看看 Optimizer 是如何执行优化规则的：
+```cpp
+auto Optimizer::OptimizeCustom(const AbstractPlanNodeRef &plan) -> AbstractPlanNodeRef {
+  auto p = plan;
+  p = OptimizeMergeProjection(p);
+  p = OptimizeMergeFilterNLJ(p);
+  p = OptimizeNLJAsIndexJoin(p);
+  p = OptimizeNLJAsHashJoin(p);  // Enable this rule after you have implemented hash join.
+  p = OptimizeOrderByAsIndexScan(p);
+  p = OptimizeSortLimitAsTopN(p);  // what we should add
+  return p;
+}
+```
+
+可以看到，让未经优化的原始 plan 树依次经历多条规则，来生成优化过的 plan。我们的任务就是新增一条规则。看看其他规则是怎么实现的，例如 `NLJAsIndexJoin`：
+
+```cpp
+auto Optimizer::OptimizeNLJAsIndexJoin(const AbstractPlanNodeRef &plan) -> AbstractPlanNodeRef {
+  std::vector<AbstractPlanNodeRef> children;
+  for (const auto &child : plan->GetChildren()) {
+    children.emplace_back(OptimizeNLJAsIndexJoin(child));
+  }
+  auto optimized_plan = plan->CloneWithChildren(std::move(children));
+
+  if (optimized_plan->GetType() == PlanType::NestedLoopJoin) {
+    // apply the rule and return
+  }
+
+  return optimized_plan;
+}
+```
+
+可以看到，实际上就是对 plan tree 进行后序遍历，自底向上地适用规则，改写节点。遍历到某个节点时，通过 if 语句来判断当前节点的类型是否符合我们要优化的类型，若符合则进行优化。
+
+大致了解如何对 plan 进行优化后，就可以开始写我们的优化规则了。需要特别注意的是，能优化为一个 TopN 算子的形式是，上层节点为 Limit，下层节点为 Sort，不能反过来。同样，我们对 plan tree 进行后续遍历，在遇到 Limit 时，判断其下层节点是否为 Sort，若为 Sort，则将这两个节点替换为一个 TopN。还是比较好实现的，只是代码看起来有点复杂。
+
+到这里，Project 3 中必做的部分就结束了。还剩下选做的 Leaderboard Task。本来也不是 CMU 的学生，就不分什么必做选做了，感兴趣的话都推荐试一试。我个人感觉 Leaderboard Task 还是很好玩的，就是代码写起来有点难受，corner case 比较多。
+
+## Leaderboard Task
