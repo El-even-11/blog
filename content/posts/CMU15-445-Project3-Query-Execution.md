@@ -114,7 +114,7 @@ Bustub 的 Optimizer 采用第一种实现方式。MIT6.830 的 SimpleDB 则是�
 
 在拿到 Optimizer 生成的具体的查询计划后，就可以生成真正执行查询计划的一系列算子了。算子也是我们在 Project 3 中需要实现的主要内容。生成算子的步骤很简单，遍历查询计划树，将树上的 PlanNode 替换成对应的 Executor。算子的执行模型也大致分为三种：
 
-1. Iterator Model，或者说火山模型。每个算子都有 `Init()` 和 `Next()` 两个方法。`Init()` 对算子进行初始化工作。`Next()` 则是向下层算子请求下一条数据。当 `Next()` 返回 false 时，则代表下层算子已经没有剩余数据，迭代结束。可以看到，火山模型一次调用请求一条数据，占用内存较小，但函数调用开销大，特别是虚函数调用造成 cache miss 等问题。
+1. Iterator Model，或 Pipeline Model，或火山模型。每个算子都有 `Init()` 和 `Next()` 两个方法。`Init()` 对算子进行初始化工作。`Next()` 则是向下层算子请求下一条数据。当 `Next()` 返回 false 时，则代表下层算子已经没有剩余数据，迭代结束。可以看到，火山模型一次调用请求一条数据，占用内存较小，但函数调用开销大，特别是虚函数调用造成 cache miss 等问题。
 2. Materialization Model. 所有算子立即计算出所有结果并返回。和 Iterator Model 相反。这种模型的弊端显而易见，当数据量较大时，内存占用很高。但减少了函数调用的开销。比较适合查询数据量较小的 OLTP workloads。
 3. Vectorization Model. 对上面两种模型的中和，一次调用返回一批数据。利于 SIMD 加速。目前比较先进的 OLAP 数据库都采用这种模型。
 
@@ -135,7 +135,7 @@ Bustub Query Execution 的大致结构就是这样，还有很多设计上的细
 
 ## Task 1 Access Method Executors
 
-Task 1 包含 3 个算子，SeqScan、Insert 和 Delete。
+Task 1 包含 4 个算子，SeqScan、Insert、Delete 和 IndexScan。
 
 ### SeqScan
 
@@ -155,10 +155,183 @@ tuple 对应数据表中的一行数据。每个 tuple 都由 RID 唯一标识�
 
 value 则是某个字段具体的值，value 本身还保存了类型信息。
 
-将这些内容理清楚后，SeqScan 就很好实现了。需要注意的是，executor 本身并不保存查询计划的信息，应该通过 executor 的成员 plan 来得知该如何进行本次计算，例如 SeqScanExecutor 需要向 SeqScanPlanNode 询问自己该扫描哪张表。
+需要注意的是，executor 本身并不保存查询计划的信息，应该通过 executor 的成员 plan 来得知该如何进行本次计算，例如 SeqScanExecutor 需要向 SeqScanPlanNode 询问自己该扫描哪张表。
 
 所有要用到的系统资源，例如 Catalog，Buffer Pool 等，都由 `ExecutorContext` 提供。
 
 ### Insert & Delete
 
-Insert 和 Delete 这两个算子实现起来基本一样，也比较特殊。数据库最主要的操作就是增查删改。Bustub 暂时没有改的操作（实际删后再增也差不多），重点也在查上。Insert 和 Delete 一定是查询计划的根节点，且仅需返回一个代表修改行数的 tuple。
+Insert 和 Delete 这两个算子实现起来基本一样，也比较特殊，是唯二的写算子。数据库最主要的操作就是增查删改。Bustub sql 层暂时不支持 UPDATE。Insert 和 Delete 一定是查询计划的根节点，且仅需返回一个代表修改行数的 tuple。
+
+Insert 和 Delete 时，记得要更新与 table 相关的所有 index。index 与 table 类似，同样由 Catalog 管理。需要注意的是，由于可以对不同的字段建立 index，一个 table 可能对应多个 index，所有的 index 都需要更新。
+
+Insert 时，直接将 tuple 追加至 table 尾部。Delete 时，并不是直接删除，而是将 tuple 标记为删除状态，也就是逻辑删除。（在事务提交后，再进行物理删除，Project 3 中无需实现）
+
+Insert & Delete 的 `Next()` 只会返回一个包含一个 integer value 的 tuple，表示 table 中有多少行受到了影响。
+
+### IndexScan
+
+使用我们在 Project 2 中实现的 B+Tree Index Iterator，遍历 B+ 树叶子节点。由于我们实现的是非聚簇索引，在叶子节点只能获取到 RID，需要拿着 RID 去 table 查询对应的 tuple。
+
+在完成 Task 1 的四个算子后，可以用已提供的 sqllogictest 工具和已提供的一些 sql 来检验自己的算子是否实现正确。
+
+关于 Task 1 的具体实现的确没太多可说的，基本是把官网的 instruction 翻译了一遍。后面几个 task 难度会稍大一点点，也会讲讲更具体的实现。
+
+## Task 2 Aggregation & Join Executors
+
+Task 2 包含了 3 个算子，Aggregation、NestedLoopJoin 和 NestedIndexJoin。
+
+### Aggregation
+
+Aggregation 算子就稍微复杂一点了。先看看 `AggregationExecutor` 的成员：
+
+```cpp
+/** The aggregation plan node */
+const AggregationPlanNode *plan_;
+/** The child executor that produces tuples over which the aggregation is computed */
+std::unique_ptr<AbstractExecutor> child_;
+/** Simple aggregation hash table */
+SimpleAggregationHashTable aht_;
+/** Simple aggregation hash table iterator */
+SimpleAggregationHashTable::Iterator aht_iterator_;
+```
+
+主要说说这个 `SimpleAggregationHashTable`。Aggregation 是 pipeline breaker。也就是说，Aggregation 算子会打破 iteration model 的规则。原因是，在 Aggregation 的 `Init()` 函数中，我们就要将所有结果全部计算出来。原因很简单，比如下面这条 sql：
+
+```sql
+SELECT t.x, max(t.y) FROM t GROUP BY t.x;
+```
+
+结果的每条 tuple 都是一个 `t.x` 的聚合，而要得到同一个 `t.x` 对应的 `max(t.y)`，必须要遍历整张表。因此，Aggregation 需要在 `Init()` 中直接计算出全部结果，将结果暂存，再在 `Next()` 中一条一条地 emit。而 `SimpleAggregationHashTable` 就是计算并保存 Aggregation 结果的数据结构。
+
+`SimpleAggregationHashTable` 维护一张 hashmap，键为 `AggregateKey`，值为 `AggregateValue`，均为 `std::vector<Value>`。key 代表 group by 的字段的数组，value 则是需要 aggregate 的字段的数组。在下层算子传来一个 tuple 时，将 tuple 的 group by 字段和 aggregate 字段分别提取出来，调用 `InsertCombine()` 将 group by 和 aggregate 的映射关系存入 `SimpleAggregationHashTable`。若当前 hashmap 中没有 group by 的记录，则创建初值；若已有记录，则按 aggregate 规则逐一更新所有的 aggregate 字段，例如取 max/min，求 sum 等等。例如下面这条 sql：
+
+```sql
+SELECT min(t.z), max(t.z), sum(t.z) FROM t GROUP BY t.x, t.y;
+```
+
+group by（AggregateKey）为 `{t.x, t.y}`，aggregate（AggregateValue）为 `{t.z, t.z, t.z}`。aggregate 规则为 `{min, max, sum}`。
+
+需要额外注意的是 `count(column)` 和 `count(*)` 的区别，以及对空值的处理。另外，不需要考虑 hashmap 过大的情况，即整张 hashmap 可以驻留在内存中，不需要通过 Buffer Pool 调用 page 来存储。
+
+在 `Init()` 中计算出整张 hashmap 后，在 `Next()` 中直接利用 hashmap iterator 将结果依次取出。
+
+### NestedLoopJoin
+
+Project 3 中只要求实现 NestedLoopJoin，HashJoin 不做强制要求，而是放在了 Leaderboard Optional 里。实际上实现一个 in-memory 的 HashJoin 也不难。Join 应该是经典的数据库性能瓶颈。Andy 在 Lecture 里也详细地量化地对比了各种 Join 的 costs，有兴趣可以看看。
+
+NestedLoopJoin 算法本身并不难，但比较容易掉进坑里。伪代码大概是这样：
+```cpp
+for outer_tuple in outer_table:
+    for inner_tuple in inner_table:
+        if inner_tuple matched outer_tuple:
+            emit
+```
+
+有了这个例子，很容易把代码写成：
+
+```cpp
+while (left_child->Next(&left_tuple)){
+    while (right_child->Next(&right_tuple)){
+        if (left_tuple matches right_tuple){
+            *tuple = ...;   // assemble left & right together
+            return true;
+        }
+    }        
+}
+return false;
+```
+
+一开始看起来似乎没什么问题。然而很快可以发现有一个严重的错误，right child 在 left child 的第一次循环中就被消耗完了，之后只会返回 false。解决方法很简单，在 `Init()` 里先把 right child 里的所有 tuple 取出来暂存在一个数组里就好，之后直接访问这个数组。
+
+```cpp
+while (left_child->Next(&left_tuple)){
+    for (auto right_tuple : right_tuples){
+        if (left_tuple matches right_tuple){
+            *tuple = ...;   // assemble left & right together
+            return true;
+        }
+    }        
+}
+return false;
+```
+
+看起来好像又没什么问题。然而，同一列是可能存在 duplicate value 的。在上层算子每次调用 NestedLoopJoin 的 `Next()` 时，NestedLoopJoin 都会向下层算子请求新的 left tuple。但有可能上一个 left tuple 还没有和 right child 中所有能匹配的 tuple 匹配完（只匹配了第一个）。
+
+例如这两张表：
+
+```
+   t1          t2   
+---------   ---------
+|   x   |   |   x   |
+---------   ---------
+|   1   |   |   1   |
+|   2   |   |   1   |
+|   3   |   |   2   |
+---------   ---------
+```
+
+现在执行
+
+```sql
+SELECT * FROM t1 INNER JOIN t2 ON t1.x = t2.x;
+```
+
+t1 中的 1 只会和 t2 的第一个 1 匹配，产生一行输出。再下一次调用 `Next()` 时，左边会直接选取 2 开始尝试匹配。
+
+解决方法也很简单，在算子里暂存 left tuple，每次调用 `Next()` 时，先用暂存的 left tuple 尝试匹配。并且要记录上一次右表匹配到的位置，不要每次都直接从右表第一行开始匹配了。右表遍历完还没有匹配结果，再去找左表要下一个 tuple。
+
+说来说去，实际上就是注意迭代器要保存上下文信息。
+
+INNER JOIN 和 LEFT JOIN 按规则实现就好，差不多。LEFT JOIN 注意处理空值。
+
+还有一个小问题，怎么判断两个 tuple 是否匹配？这里就要第一次遇到 Project 3 里另一个重要的类 `AbstractExpression` 了。
+
+`AbstractExpression` 抽象了 sql 中的各种表达式，包括 `ArithmeticExpression`、`ColumnValueExpression`、`ComparisonExpression`、`ConstantValueExpression` 和 `LogicExpression`。这都是什么？看下面这条 sql：
+
+```sql
+SELECT * FROM t1 WHERE t1.x = t1.y + 1 AND t1.y > 0;
+```
+
+重点关注 `WHERE` 后的表达式 `t1.x = t1.y + 1 AND t1.y > 0`。看这下面这张图：
+
+![](../../imgs/15-445-3-5.png)
+
+其实就是一颗表达式树。`AbstractExpression` 就是表达式树的节点。sql 中的所有表达式都会被 parse 为表达式树，在 Binder 中进行绑定。上面的 JOIN 中也存在表达式 `t1.x = t2.x`。`AbstractExpression` 里最重要的方法就是 `Evaluate()`，返回值是 value。调用 `Evaluate()`，参数为 tuple 和 tuple 对应的 schema，返回从这个 tuple 中提取数据后代入表达式计算得到的结果。
+
+在 NestedLoopJoin 里，我们要用到的是 `EvaluateJoin()`，也差不多，只不过输入的是左右两个 tuple 和 schema。返回值是表示 true 或 false 的 value。true 则代表成功匹配。
+
+到这里，NestedLoopJoin 就成功实现了。后来我看了一下 [RisingLight](https://github.com/risinglightdb/risinglight/blob/main/src/executor_v2/nested_loop_join.rs) 里的实现，我这个 rustacean 萌新的第一反应是惊为天人。大致是这样：
+
+```rust
+pub async fn Execute(){
+    for left_tuple in left_table {
+        for right_tuple in right_table {
+            if matches {
+                yield AssembleOutput();
+            }
+        }
+    }
+}
+```
+
+这是一个生成器，当执行到 yield 时，函数会暂时中断，从生成器回到调用者。而调用者再次进入生成器时，可以直接回到上次中断的地方。再配合 stream，就利用 rust 的无栈协程和异步编程完美地实现了一个 NestedLoopJoin 算子，比手动保存上下文信息优雅太多了。
+
+后来仔细想想，Go 也可以有类似的写法：
+```go
+func Executor(out_ch, left_ch, right_ch chan Tuple) {
+    for left_tuple := range left_ch {
+        for right_tuple := range right_ch {
+            if matches {
+                out_ch <- AssembleOutput();
+            }
+        }
+    }
+    close(out_ch)
+}
+```
+
+每个算子都是一个 goroutine，通过 channel 实现异步的计算，好像也不错。
+
+### NestedIndexJoin
+
