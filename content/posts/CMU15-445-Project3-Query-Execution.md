@@ -459,6 +459,7 @@ Join Reorder 其实比较简单，可以调用 `EstimatedCardinality()` 来估�
 ### Query 2: Too Many Joins!
 
 先看看 sql：
+
 ```sql
 select count(*), max(__mock_t4_1m.x), max(__mock_t4_1m.y), max(__mock_t5_1m.x), max(__mock_t5_1m.y), max(__mock_t6_1m.x), max(__mock_t6_1m.y)
     from (select * from __mock_t4_1m, __mock_t5_1m where __mock_t4_1m.x = __mock_t5_1m.x), __mock_t6_1m
@@ -493,6 +494,7 @@ select count(*), max(t4.x), max(t4.y), max(t5.x), max(t5.y), max(t6.x), max(t6.y
 ### Query 3: The Mad Data Scientist
 
 看看 sql：
+
 ```sql
 select v, d1, d2 from (
     select
@@ -501,6 +503,7 @@ select v, d1, d2 from (
     from __mock_t7 left join (select v4 from __mock_t8 where 1 == 2) on v < v4 group by v
 )
 ```
+
 很怀疑迟先生在写这条 sql 时的精神状态。
 
 实际上，我们只用 `SELECT v, d1, d2`，其余的数据都是多余的，无需计算。因此我们需要实现 Column Pruning 优化。
@@ -520,4 +523,4 @@ select v, d1, d2 from (
 
 同样地，有很多实现上具体的细节也忽略掉了，比如如何装配一个中间 tuple，类型系统的设计，table page 的设计等等。这些都与主线关系不大，也就不再唠叨了。
 
-另外，在测试的过程中，意外发现 Bustub 的 OR 语句无法正确执行，一路找 bug 找上去发现是 Binder 中的一个小 typo，向 Bustub 提了 PR，也被 merge了。算是为开源课程做了一点微微微小的贡献吧。
+另外，在测试的过程中，意外发现 Bustub 的 OR 语句无法正确执行，一路找 bug 找上去发现是 Binder 中的一个小 typo，向 Bustub 提了 PR，也被 merge 了。算是为开源课程做了一点微微微小的贡献吧。
