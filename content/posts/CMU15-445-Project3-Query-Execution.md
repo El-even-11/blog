@@ -65,6 +65,7 @@ Andy 在 Lecture 中说，Query Optimization 是数据库最难的部分，Trans
 - Task2：Aggregation and Join Executors. 包含 Aggregation、NestedLoopJoin、NestedIndexJoin 三个算子。
 - Task3：Sort + Limit Executors and Top-N Optimization. 包含 Sort、Limit、TopN 三个算子，以及实现将 Sort + Limit 优化为 TopN 算子。
 - Leaderboard Task：为 Optimizer 实现新的优化规则，包括 Hash Join、Join Reordering、Filter Push Down、Column Pruning 等等，让三条诡异的 sql 语句执行地越快越好。
+
 ## Talking Casually
 
 在正式开始记录 Project 3 的具体实现之前，我想随便聊聊 Bustub 整体的结构与运行流程。在迷迷糊糊地通过 Project 3 的所有 tests 后，我意识到这其实是了解数据库到底是如何执行 sql 语句的最佳时机。Project 1&2 都比较局部，而在这里，一个能真正执行 sql 语句的数据库已经构建起来了。先暂时抛开 transaction，来看看一条 sql 语句在 Bustub 中的旅行。
@@ -73,7 +74,7 @@ Andy 在 Lecture 中说，Query Optimization 是数据库最难的部分，Trans
 
 ### Parser
 
-一条 sql 语句，首先经过  Parser 生成一棵抽象语法树 AST。具体如何生成，请参考编译原理。Parser 不是数据库的核心部分，也不是性能瓶颈，因此除非热爱编译原理，或者想通过实现一个 sql Parser 对编译原理进行实践，否则一般都会采用第三方库。Bustub 中采用了 libpg_query 库将 sql 语句 parse 为 AST。
+一条 sql 语句，首先经过 Parser 生成一棵抽象语法树 AST。具体如何生成，请参考编译原理。Parser 不是数据库的核心部分，也不是性能瓶颈，因此除非热爱编译原理，或者想通过实现一个 sql Parser 对编译原理进行实践，否则一般都会采用第三方库。Bustub 中采用了 libpg_query 库将 sql 语句 parse 为 AST。
 
 ### Binder
 
@@ -221,6 +222,7 @@ group by（AggregateKey）为 `{t.x, t.y}`，aggregate（AggregateValue）为 `{
 Project 3 中只要求实现 NestedLoopJoin，HashJoin 不做强制要求，而是放在了 Leaderboard Optional 里。实际上实现一个 in-memory 的 HashJoin 也不难。Join 应该是经典的数据库性能瓶颈。Andy 在 Lecture 里也详细地量化地对比了各种 Join 的 costs，有兴趣可以看看。
 
 NestedLoopJoin 算法本身并不难，但比较容易掉进坑里。伪代码大概是这样：
+
 ```cpp
 for outer_tuple in outer_table:
     for inner_tuple in inner_table:
@@ -237,7 +239,7 @@ while (left_child->Next(&left_tuple)){
             *tuple = ...;   // assemble left & right together
             return true;
         }
-    }        
+    }
 }
 return false;
 ```
@@ -251,7 +253,7 @@ while (left_child->Next(&left_tuple)){
             *tuple = ...;   // assemble left & right together
             return true;
         }
-    }        
+    }
 }
 return false;
 ```
@@ -261,7 +263,7 @@ return false;
 例如这两张表：
 
 ```
-   t1          t2   
+   t1          t2
 ---------   ---------
 |   x   |   |   x   |
 ---------   ---------
@@ -320,6 +322,7 @@ pub async fn Execute(){
 这是一个生成器，当执行到 yield 时，函数会暂时中断，从生成器回到调用者。而调用者再次进入生成器时，可以直接回到上次中断的地方。再配合 stream，就利用 rust 的无栈协程和异步编程完美地实现了一个 NestedLoopJoin 算子，比手动保存上下文信息优雅太多了。
 
 后来仔细想想，Go 也可以有类似的写法：
+
 ```go
 func Executor(out_ch, left_ch, right_ch chan Tuple) {
     for left_tuple := range left_ch {
@@ -352,7 +355,7 @@ Sort 也是 pipeline breaker。在 `Init()` 中读取所有下层算子的 tuple
 ```cpp
 std::sort(sorted_tuples_.begin(), sorted_tuples_.end(), [this](const Tuple &a, const Tuple &b) {
     for (auto [order_by_type, expr] : plan_->GetOrderBy()) {
-      // compare and return ... 
+      // compare and return ...
     }
     UNREACHABLE("doesn't support duplicate key");
 });
@@ -369,6 +372,7 @@ std::sort(sorted_tuples_.begin(), sorted_tuples_.end(), [this](const Tuple &a, c
 ### Sort + Limit As TopN
 
 这是 Project 3 里最后一个必做的小问。终于不是实现算子了，而是在 Optimizer 里增加一条规则，将 Sort + Limit 优化为 TopN。先看看 Optimizer 是如何执行优化规则的：
+
 ```cpp
 auto Optimizer::OptimizeCustom(const AbstractPlanNodeRef &plan) -> AbstractPlanNodeRef {
   auto p = plan;
@@ -402,8 +406,118 @@ auto Optimizer::OptimizeNLJAsIndexJoin(const AbstractPlanNodeRef &plan) -> Abstr
 
 可以看到，实际上就是对 plan tree 进行后序遍历，自底向上地适用规则，改写节点。遍历到某个节点时，通过 if 语句来判断当前节点的类型是否符合我们要优化的类型，若符合则进行优化。
 
-大致了解如何对 plan 进行优化后，就可以开始写我们的优化规则了。需要特别注意的是，能优化为一个 TopN 算子的形式是，上层节点为 Limit，下层节点为 Sort，不能反过来。同样，我们对 plan tree 进行后续遍历，在遇到 Limit 时，判断其下层节点是否为 Sort，若为 Sort，则将这两个节点替换为一个 TopN。还是比较好实现的，只是代码看起来有点复杂。
+大致了解如何对 plan 进行优化后，就可以开始写我们的优化规则了。需要特别注意的是，能优化为一个 TopN 算子的形式是，上层节点为 Limit，下层节点为 Sort，不能反过来。同样，我们对 plan tree 进行后续遍历，在遇到 Limit 时，判断其下层节点是否为 Sort，若为 Sort，则将这两个节点替换为一个 TopN。还是比较好实现的，只是代码看起来可能有点复杂。
 
 到这里，Project 3 中必做的部分就结束了。还剩下选做的 Leaderboard Task。本来也不是 CMU 的学生，就不分什么必做选做了，感兴趣的话都推荐试一试。我个人感觉 Leaderboard Task 还是很好玩的，就是代码写起来有点难受，corner case 比较多。
 
 ## Leaderboard Task
+
+Leaderboard Task 包含三条极其诡异的 sql，我们要做的就是增加新的优化规则，让这三条 sql 执行地越快越好。分三个部分：
+
+- Query 1: Where's the Index?
+- Query 2: Too Many Joins!
+- Query 3: The Mad Data Scientist
+
+### Query 1: Where's the Index?
+
+首先来看一看需要我们优化的 sql：
+
+```sql
+create index t1x on t1_50k(x);
+
+select count(*), max(t1_50k.x), max(t1_50k.y), max(__mock_t2_100k.x), max(__mock_t2_100k.y), max(__mock_t3_1k.x), max(__mock_t3_1k.y) from (
+    t1_50k inner join __mock_t2_100k on t1_50k.x = __mock_t2_100k.x
+) inner join __mock_t3_1k on __mock_t2_100k.y = __mock_t3_1k.y;
+```
+
+稍微把表名替换一下：
+
+```sql
+create index t1x on t1(x);
+
+select count(*), max(t1.x), max(t1.y), max(t2.x), max(t2.y), max(t3.x), max(t3.y) from (
+    t1 inner join t2 on t1.x = t2.x
+) inner join t3 on t2.y = t3.y;
+```
+
+看的我有点精神恍惚，实际上就是三张表 Join 再 Aggregate 一下。主要优化方向是把 NestedLoopJoin 替换为 HashJoin、Join Reorder 让小表驱动大表，以及正确识别 t1.x 上的索引。
+
+先说 HashJoin。实际上仅需考虑 in-memory 情况时，HashJoin 并不难实现。主要分为两个步骤，Build 和 Probe。Build 阶段在 `Init()` 进行，遍历左表建立 hashmap。Probe 阶段在 `Next()` 进行，遍历右表探测是否有 match 的 tuple。需要注意 HashJoin 只能用于优化 equi-join。
+
+具体实现起来，对于我这种对 modern c++ 极不熟悉的人来说，难点反而在怎么正确构造出这个 hashmap 让编译通过。hashmap 的键应该为 value，但 value 没有重载 `operator==`，也没有实现自定义 hash 函数，不能直接作为键。
+
+一开始，我想用 `src/include/common/util/hash_util.h` 里的 `HashValue` 函数将 value hash 为 `hash_t` 类型，然后把 `hash_t` 作为键。hashmap 直接用 `std::unordered_map`。但遇到了哈希冲突的问题，还是绕不过要重载 `operator==`。直接重载 value 的 `operator==` 是行不通的，autograder 无法识别。因此我定义了 `ValueKey` 类型把 value 包裹起来，为 `ValueKey` 重载 == 并实现 hash 函数。这样就可以直接用 ValueKey 作为 hashmap 的键了。至于 `operator==` 的具体实现，需要关注一下 `Value` 类的结构，取出 value 的 raw data 并 cast 为正确类型进行比较。同样，hash 函数也是对 raw data 进行 hash。
+
+hashmap 的值是什么？注意不是 tuple，而是 tuple 数组。同样，因为可能存在 duplicate。
+
+HashJoin 的实现大致如此，接下来是 Join Reorder。
+
+Join Reorder 其实比较简单，可以调用 `EstimatedCardinality()` 来估计 table 的大小，然后根据大小来调整 plan tree 里连续 join 的顺序即可。
+
+最后是 Correctly Pick up Index。在原始 NLJAsIndexJoin 里，始终只会尝试为右表匹配 index，左表则被忽略。因此，可以新建一条规则，如果左表有 index，右表没有，且为 equi-join，则把左右顺序替换一下，即有索引的左表换到右边，便于之后正确识别索引。然而我在实现后发现，这是一个负优化（，可能大部分情况下还是 HashJoin 比较靠谱。
+
+### Query 2: Too Many Joins!
+
+先看看 sql：
+```sql
+select count(*), max(__mock_t4_1m.x), max(__mock_t4_1m.y), max(__mock_t5_1m.x), max(__mock_t5_1m.y), max(__mock_t6_1m.x), max(__mock_t6_1m.y)
+    from (select * from __mock_t4_1m, __mock_t5_1m where __mock_t4_1m.x = __mock_t5_1m.x), __mock_t6_1m
+        where (__mock_t6_1m.y = __mock_t5_1m.y)
+            and (__mock_t4_1m.y >= 1000000) and (__mock_t4_1m.y < 1500000) and (__mock_t6_1m.x < 150000) and (__mock_t6_1m.x >= 100000);
+```
+
+更精神恍惚了，简化一下：
+
+```sql
+select count(*), max(t4.x), max(t4.y), max(t5.x), max(t5.y), max(t6.x), max(t6.y)
+    from (select * from t4, t5 where t4.x = t5.x), t6
+        where (t6.y = t5.y) and (t4.y >= 1000000) and (t4.y < 1500000) and (t6.x < 150000) and (t6.x >= 100000);
+```
+
+这大概是个什么东西呢，大概是所有的 JOIN 全部写成了 FULL JOIN，然后把所有 Filter 放在了 plan tree 的顶端。原始执行计划是这样的：
+
+![](../../imgs/15-445-3-6.png)
+
+需要优化的内容还是比较明显的，Filter Push-down，将 Filter 尽可能地下推至数据源处。需要注意不是所有的 Filter 都可以下推。在本例中，我们只需要把 Filter 正确下推至 Join 算子下就可以了。最终产生的优化方案大致是这样：
+
+![](../../imgs/15-445-3-7.png)
+
+注意要将 Filter 的 predicate 语句正确分类，下推至正确的分支。
+
+在实现 Filter Push-down 时，一开始我和之前一样，进行后序遍历，自底向上地改写，但是发现这样似乎不能将 Filter 完全地下推，因为一个 Filter 被下推一次后，就无法被再次访问到了，只能被下推一次。因此这次我改用了先序遍历，自顶向下地改写。当下推一个 Filter 后，由于是向下遍历，Filter 还能被再次访问到，可以被继续下推。
+
+需要注意的时，我们下推的不是整个 Filter 节点，实际上是节点中的 predicate。我的做法是遍历表达式树，提取 predicate 中的所有 comparison，判断表达式的两边是否一个是 column value，一个是 const value，只有这样的 predicate 可以被下推（也存在其他形式的可以下推的 predicate，由于在这里只是对 optimizer 的体验，也只用优化预先给出的 sql，可以稍微简化一下算法，不用考虑太多的 corner case），再将所有的 predicate 重新组合为 logic expression，生成新的 Filter，根据 column value 的 idx 来选择下推的分支。
+
+两边都为 column value 且分别代表左右两个下层算子的某一列的 Filter 可以被结合到 Join 节点中作为 Join 条件。这一步的规则已经被实现好了，因此这种 Filter 我们让其停留在原地即可。
+
+### Query 3: The Mad Data Scientist
+
+看看 sql：
+```sql
+select v, d1, d2 from (
+    select
+        v, max(v1) as d1, max(v1) + max(v1) + max(v2) as d2,
+        min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2), min(v1), max(v2), min(v2), max(v1) + min(v1), max(v2) + min(v2)
+    from __mock_t7 left join (select v4 from __mock_t8 where 1 == 2) on v < v4 group by v
+)
+```
+很怀疑迟先生在写这条 sql 时的精神状态。
+
+实际上，我们只用 `SELECT v, d1, d2`，其余的数据都是多余的，无需计算。因此我们需要实现 Column Pruning 优化。
+
+我实现的 Column Pruning 包括两个部分：
+
+1. 遇到连续的两个 Projection，合并为 1 个，只取上层 Projection 所需列。
+2. 遇到 Projection + Aggregation，改写 aggregates，截取 Projection 中需要的项目，其余直接抛弃。
+
+同样地，我个人认为 Column Pruning 也是自顶向下地改写比较方便。具体实现是收集 Projection 里的所有 column，然后改写下层节点，仅保留上层需要 project 的 column。这里的 column 不一定是表中的 column，而是一种广义的 column，例如 `SELECT t1.x + t1.y FROM t1` 中的 `t1.x + t1.y`。
+
+另外，我们注意到这条 sql 里有一个永为假的 predicate `where 1 == 2`。对于这种 Filter，我们可以将其优化为 DummyScan，即第一次调用 `Next()` 就返回 false。可以用一个空的 Value 算子实现。
+
+## Summary
+
+至此，Project 3 就全部完成了。总的来说体验还是很好的，实现了一系列算子，也实现了一系列的优化规则，对查询引擎有了更清晰的认识。
+
+同样地，有很多实现上具体的细节也忽略掉了，比如如何装配一个中间 tuple，类型系统的设计，table page 的设计等等。这些都与主线关系不大，也就不再唠叨了。
+
+另外，在测试的过程中，意外发现 Bustub 的 OR 语句无法正确执行，一路找 bug 找上去发现是 Binder 中的一个小 typo，向 Bustub 提了 PR，也被 merge了。算是为开源课程做了一点微微微小的贡献吧。
