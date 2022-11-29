@@ -325,8 +325,14 @@ pub async fn Execute(){
 
 ```go
 func Executor(out_ch, left_ch, right_ch chan Tuple) {
+    // fetch right tuples from right_ch
+    right_tuples := []Tuple{}
+    for right_tuple := range right_ch {
+        right_tuples = append(right_tuples, right_tuple)
+    }
+
     for left_tuple := range left_ch {
-        for right_tuple := range right_ch {
+        for _, right_tuple := range right_tuples {
             if matches {
                 out_ch <- AssembleOutput();
             }
