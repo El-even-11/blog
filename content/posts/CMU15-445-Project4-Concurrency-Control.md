@@ -38,8 +38,6 @@ editPost:
 
 完结撒花！临近期末周了，来摸摸鱼记录一下 Bustub Concurrency Control 的实现过程。
 
-非常感谢 CMU 慷慨地开源如此优质的课程。
-
 ## Resources
 
 - [https://15445.courses.cs.cmu.edu/fall2022](https://15445.courses.cs.cmu.edu/fall2022) 课程官网
@@ -317,13 +315,14 @@ Task 2 的内容就是这些，核心是环检测算法。
 
 在 `Init()` 函数中，为表加上 S 锁。如果隔离级别是 `READ_UNCOMMITTED` 则无需加锁。加锁失败则抛出 `ExecutionException` 异常。
 
-在 `Next()` 函数中，若表中已经没有数据，则释放之前持有的锁。
+在 `READ_COMMITTED` 下，在 `Next()` 函数中，若表中已经没有数据，则释放之前持有的锁。在 `REPEATABLE_READ` 下，在 Commit/Abort 时统一释放，无需手动释放。
+
 
 ### Insert & Delete
 
 在 `Init()` 函数中，为表加上 X 锁。实际上为表加 IX 锁再为行加 X 锁应该也可以，我这里图省事就直接用大锁了。同样，若获取失败则抛 `ExecutionException` 异常。另外，这里的获取失败不仅是结果返回 false，还有可能是抛出了 `TransactionAbort()` 异常，例如 `UPGRADE_CONFLICT`，需要用 try catch 捕获。
 
-在 `Next()` 函数需要返回 false 前，释放持有的 X 锁。
+锁在 Commit/Abort 时统一释放，无需手动释放。
 
 另外，在 Notes 里提到的
 
@@ -340,3 +339,5 @@ Task 2 的内容就是这些，核心是环检测算法。
 感谢 CMU 慷慨地提供如此优质的教学资源，开放了 AutoGrader 测评，感谢 Andy 的教学，感谢 15-445 TAs 在 non-CMU Discord 里对各种问题的解答。
 
 最后，写下这个系列的初衷是为了自己能够更好地理解知识，复盘实现过程，以后完全看不懂自己曾经写了啥的时候也可以来看看当时的想法。另外，假如这些能够为朋友们或后来者提供一些微小的帮助，便是再好不过了。
+
+**Update:** 并没有完结，突然发现 Leaderboard Task 忘写了，还可以进行一些优化提高 QPS。先鸽了，有空再来写。
