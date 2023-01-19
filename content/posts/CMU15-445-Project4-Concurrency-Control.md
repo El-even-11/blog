@@ -146,6 +146,8 @@ granted 和 waiting 的锁请求均放在同一个队列里，我们需要遍历
 
 为什么不允许？我忘了。。。我记得在实现的过程中突然灵感一闪，领悟出为何不允许多事务同时进行锁升级（也可能是当时就想错了），但由于没有及时记录，时间间隔有点久，现在想不起来了。之后再慢慢想想到底是为了降低实现复杂度还是有什么其他的特殊考量。
 
+**Update：实际就是为了降低实现的复杂度，增加一条升级队列可以实现同步的升级。可以看 [这里](https://discord.com/channels/724929902075445281/1014055970634215434/1060110182308384768) 的讨论。**
+
 然后，判断升级锁的类型和之前锁是否兼容，不能反向升级。
 
 > While upgrading, only the following transitions should be allowed:
@@ -309,6 +311,8 @@ Task 2 的内容就是这些，核心是环检测算法。
 
 这一部分需要我们将 transaction 应用到之前实现的算子中，以支持并发的查询。比较简单。
 
+**Update：实际也没有那么简单。。要理清楚该什么时候加锁/解锁、该加什么锁。感谢[评论区的各位朋友提出了相关的问题](https://zhuanlan.zhihu.com/p/592700870)。**
+
 我们仅需修改 `SeqScan`、`Insert` 和 `Delete` 三个算子。为什么其他的算子不需要修改？因为其他算子获取的 tuple 数据均为中间结果，并不是表中实际的数据。而这三个算子是需要与表中实际数据打交道的。其中 `Insert` 和 `Delete` 几乎完全一样，与 `SeqScan` 分别代表着写和读。
 
 ### SeqScan
@@ -330,6 +334,45 @@ Task 2 的内容就是这些，核心是环检测算法。
 
 似乎 `InsertTuple()` 函数里已经帮我们做好了，不需要维护 write set。而 index 的 write set 需要我们自己维护。当然，Project 4 并不需要考虑 index，不维护代码也能过。
 
+## LeaderBoard Task
+
+Leaderboard Task 里需要实现三个优化。
+
+### Predicate Pushdown to SeqScan
+
+将 SeqScan 算子上层的 Filter 算子结合进 SeqScan 里，这样仅需锁住符合 Predicate 的行。具体实现比较简单，优化函数已经为我们写好了，稍微修改一下 SeqScan 算子即可。
+
+### Implement UpdateExecutor
+
+实现 Update 算子，这样可以在原地直接修改 tuple，不需要先 Delete 再 Insert。也比较简单，注意表加 IX 锁，行加 X 锁。返回更新的行的数量。
+
+### Use Index
+
+在执行类似
+
+```sql
+SELECT ... WHERE id = 1;
+```
+
+这种 sql，并且在 id 上有索引时，可以利用索引来查询，避免遍历整张表。这是三项优化中效果最明显的一项，可以把 QPS 从几十提升到几万。
+
+在实现这个优化时，不需要考虑太多的情况，只用按测试中查询的格式来匹配。测试中主要需要优化的是这条 sql：
+
+```sql
+SELECT * FROM nft WHERE id = <nft_id>
+```
+实际这条 sql 是 Update 算子底下的 SeqScan 算子。在 id 上建立索引后，可以直接在 B+ 树中用 `GetValue(nft_id)` 来获取 tuple。具体做法是修改 IndexScan 算子，添加一种单点查询的情况。并在优化规则中尝试匹配形如
+
+```
+Filter
+   |
+SeqScan
+```
+
+的情况，并且 Filter 的 Predicate 形如 `x=a`，其中 x 是 `ColumnValue`，x 上有索引，a 是 `ConstantValue`。注意这条优化规则要在 `MergeFilterScan` 之前执行，否则 Filter 会直接被 Merge 到 SeqScan 里了。或者直接优化已经完成 Merge 的 SeqScan 算子。
+
+在成功匹配后，提取出 a，并将查询计划更新为执行索引单点查询的 IndexScan 算子，使用 `ScanKey(tuple{a})` 查询，需要构造一下包含 a 的 tuple。同样，单点查询时 IndexScan 算子中要注意加锁，表 IS 行 S。
+
 ## Summary
 
 这就是 Project 4 或者说 CMU15-445 2022Fall Projects 的全部内容了。在 Project 4 里手写了一个锁管理器，为 Bustub 提供以 2PL 为基础的并发查询和事务模型，收获同样很大。另外老实说由于快到期末周了，这篇记录写的比较仓促，没有讨论太多设计的理念，仅仅是记录了一下实现过程，写的比较水，还请见谅。
@@ -339,5 +382,3 @@ Task 2 的内容就是这些，核心是环检测算法。
 感谢 CMU 慷慨地提供如此优质的教学资源，开放了 AutoGrader 测评，感谢 Andy 的教学，感谢 15-445 TAs 在 non-CMU Discord 里对各种问题的解答。
 
 最后，写下这个系列的初衷是为了自己能够更好地理解知识，复盘实现过程，以后完全看不懂自己曾经写了啥的时候也可以来看看当时的想法。另外，假如这些能够为朋友们或后来者提供一些微小的帮助，便是再好不过了。
-
-**Update:** 并没有完结，突然发现 Leaderboard Task 忘写了，还可以进行一些优化提高 QPS。先鸽了，有空再来写。
