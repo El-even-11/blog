@@ -9,7 +9,16 @@
       <link>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
     </image>
     <generator>Hugo -- gohugo.io</generator>
-    <lastBuildDate>Sat, 17 Dec 2022 20:20:04 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/posts/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Sun, 19 Feb 2023 21:41:08 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/posts/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>CMU15-445 Projects</title>
+      <link>https://blog.eleven.wiki/posts/cmu15-445-projects/</link>
+      <pubDate>Sun, 19 Feb 2023 21:41:08 +0800</pubDate>
+      
+      <guid>https://blog.eleven.wiki/posts/cmu15-445-projects/</guid>
+      <description>CMU15-445 Projects Summary</description>
+    </item>
+    
     <item>
       <title>CMU15-445 Project4 Concurrency Control</title>
       <link>https://blog.eleven.wiki/posts/cmu15-445-project4-concurrency-control/</link>
