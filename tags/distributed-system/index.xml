@@ -9,7 +9,16 @@
       <link>https://blog.eleven.wiki/%3Clink%20or%20path%20of%20image%20for%20opengraph,%20twitter-cards%3E</link>
     </image>
     <generator>Hugo -- gohugo.io</generator>
-    <lastBuildDate>Thu, 22 Sep 2022 18:16:09 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/tags/distributed-system/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Sat, 18 Mar 2023 20:43:22 +0800</lastBuildDate><atom:link href="https://blog.eleven.wiki/tags/distributed-system/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Database and Distributed System TAGS</title>
+      <link>https://blog.eleven.wiki/posts/database-and-distributed-system-tags/</link>
+      <pubDate>Sat, 18 Mar 2023 20:43:22 +0800</pubDate>
+      
+      <guid>https://blog.eleven.wiki/posts/database-and-distributed-system-tags/</guid>
+      <description>Desc Text.</description>
+    </item>
+    
     <item>
       <title>MIT6.824 Lab3 KVService</title>
       <link>https://blog.eleven.wiki/posts/mit6.824-lab3-kvservice/</link>
@@ -17,15 +26,6 @@
       
       <guid>https://blog.eleven.wiki/posts/mit6.824-lab3-kvservice/</guid>
       <description>Fault-tolerant KV Service based on Raft</description>
-    </item>
-    
-    <item>
-      <title>MIT6.824 Notes</title>
-      <link>https://blog.eleven.wiki/posts/mit6.824-notes/</link>
-      <pubDate>Wed, 21 Sep 2022 21:41:15 +0800</pubDate>
-      
-      <guid>https://blog.eleven.wiki/posts/mit6.824-notes/</guid>
-      <description>Notes for MIT6.824 Distributed System</description>
     </item>
     
     <item>

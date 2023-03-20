@@ -2,13 +2,19 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
   xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
+    <loc>https://blog.eleven.wiki/tags/database/</loc>
+    <lastmod>2023-03-18T20:43:22+08:00</lastmod>
+  </url><url>
     <loc>https://blog.eleven.wiki/posts/database-and-distributed-system-tags/</loc>
+    <lastmod>2023-03-18T20:43:22+08:00</lastmod>
+  </url><url>
+    <loc>https://blog.eleven.wiki/tags/distributed-system/</loc>
     <lastmod>2023-03-18T20:43:22+08:00</lastmod>
   </url><url>
     <loc>https://blog.eleven.wiki/</loc>
     <lastmod>2023-03-18T20:43:22+08:00</lastmod>
   </url><url>
-    <loc>https://blog.eleven.wiki/tags/first/</loc>
+    <loc>https://blog.eleven.wiki/tags/notes/</loc>
     <lastmod>2023-03-18T20:43:22+08:00</lastmod>
   </url><url>
     <loc>https://blog.eleven.wiki/posts/</loc>
@@ -18,9 +24,6 @@
     <lastmod>2023-03-18T20:43:22+08:00</lastmod>
   </url><url>
     <loc>https://blog.eleven.wiki/posts/cmu15-445-projects/</loc>
-    <lastmod>2023-02-19T21:41:08+08:00</lastmod>
-  </url><url>
-    <loc>https://blog.eleven.wiki/tags/database/</loc>
     <lastmod>2023-02-19T21:41:08+08:00</lastmod>
   </url><url>
     <loc>https://blog.eleven.wiki/posts/cmu15-445-project4-concurrency-control/</loc>
@@ -44,17 +47,11 @@
     <loc>https://blog.eleven.wiki/tags/consensus-algorithm/</loc>
     <lastmod>2022-09-22T18:16:09+08:00</lastmod>
   </url><url>
-    <loc>https://blog.eleven.wiki/tags/distributed-system/</loc>
-    <lastmod>2022-09-22T18:16:09+08:00</lastmod>
-  </url><url>
     <loc>https://blog.eleven.wiki/posts/mit6.824-lab3-kvservice/</loc>
     <lastmod>2022-09-22T18:16:09+08:00</lastmod>
   </url><url>
     <loc>https://blog.eleven.wiki/tags/raft/</loc>
     <lastmod>2022-09-22T18:16:09+08:00</lastmod>
-  </url><url>
-    <loc>https://blog.eleven.wiki/posts/mit6.824-notes/</loc>
-    <lastmod>2022-09-21T21:41:15+08:00</lastmod>
   </url><url>
     <loc>https://blog.eleven.wiki/posts/mit6.824-lab2-raft/</loc>
     <lastmod>2022-06-25T00:10:08+08:00</lastmod>
