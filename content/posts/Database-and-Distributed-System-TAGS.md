@@ -3,7 +3,7 @@ title: "Database and Distributed System TAGS"
 date: 2023-03-18T20:43:22+08:00
 # weight: 1
 # aliases: ["/first"]
-tags: ["first"]
+tags: ["Database", "Distributed System", "Notes"]
 author: "Me"
 # author: ["Me", "You"] # multiple authors
 showToc: true
@@ -39,6 +39,13 @@ editPost:
 知识点中转站！
 
 ## 分布式
+Raft：
+- [论文](https://blog.eleven.wiki/raft-extended.pdf)
+- [翻译](https://github.com/maemual/raft-zh_cn/blob/master/raft-zh_cn.md)
+
+Paxos：
+- [OpenACID Blog](https://blog.openacid.com/algo/paxos/)
+
 最终一致性：
 - [DDIA](http://ddia.vonng.com/#/ch5?id=%e5%a4%8d%e5%88%b6%e5%bb%b6%e8%bf%9f%e9%97%ae%e9%a2%98)
 
@@ -52,4 +59,13 @@ CAP 定理：
 
 顺序：
 - [DDIA](http://ddia.vonng.com/#/ch9?id=%e9%a1%ba%e5%ba%8f%e4%bf%9d%e8%af%81)
-  
+
+全序广播：
+- [DDIA](http://ddia.vonng.com/#/ch9?id=%e5%85%a8%e5%ba%8f%e5%b9%bf%e6%92%ad)
+
+2PC：
+- [DDIA](http://ddia.vonng.com/#/ch9?id=%e4%b8%a4%e9%98%b6%e6%ae%b5%e6%8f%90%e4%ba%a4%e7%ae%80%e4%bb%8b)
+
+3PC：
+- [DDIA](http://ddia.vonng.com/#/ch9?id=%e4%b8%89%e9%98%b6%e6%ae%b5%e6%8f%90%e4%ba%a4)
+

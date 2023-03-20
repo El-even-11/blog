@@ -46,7 +46,7 @@ editPost:
 - [Debugging by Pretty Printing](https://blog.josejg.com/debugging-pretty/) debug 技巧，**强烈推荐阅读和运用**
 - [Raft Q&A](https://thesquareplanet.com/blog/raft-qa/) 关于 Raft 的一些 Q&A
 - [Raft Visualization](https://raft.github.io/) Raft 动画演示
-- [In Search of an Understandable Consensus Algorithm](https://el-even-11.github.io/Blog/raft-extended.pdf) Raft 论文
+- [In Search of an Understandable Consensus Algorithm](https://blog.eleven.wiki/raft-extended.pdf) Raft 论文
 
 ## Lab2A Raft Leader Election
 
